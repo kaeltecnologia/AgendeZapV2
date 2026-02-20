@@ -1,0 +1,5 @@
+{
+  "name": "AgendeZap - Barbershop SaaS",
+  "description": "A multi-tenant intelligent scheduling SaaS for Brazilian barbershops using Gemini AI and Evolution API for natural WhatsApp-based booking.",
+  "requestFramePermissions": []
+}
