@@ -154,7 +154,7 @@ function detectIntent(text: string, step: ConversationStep): Intent {
 function getStepReprompt(step: ConversationStep, session: Session, activeServices: any[]): string {
   switch (step) {
     case 'WAITING_NAME': return 'Como posso te chamar?';
-    case 'WAITING_SERVICE': return `Qual procedimento você deseja?\n\n${buildServiceList(activeServices)}`;
+    case 'WAITING_SERVICE': return `Qual procedimento gostaria de agendar?`;
     case 'WAITING_BARBER': return `Qual barbeiro você prefere?`;
     case 'WAITING_DATE': return `Para qual dia você quer agendar?`;
     case 'WAITING_PERIOD': return `Qual período você prefere?\n\n${buildPeriodOptions(session.data.availableSlots || [])}`;
@@ -323,7 +323,8 @@ async function extractDate(text: string, apiKey: string, history: HistoryEntry[]
 
 function detectPeriod(text: string): Period | null {
   const lower = text.toLowerCase();
-  if (lower.includes('manhã') || lower.includes('manha') || lower.includes('cedo') || lower.includes('mañana')) return 'MANHA';
+  // Use word boundary to avoid matching "manhã" inside "amanhã"
+  if (/\bmanhã\b|\bmanha\b|\bcedo\b/.test(lower)) return 'MANHA';
   if (lower.includes('tarde') || lower.includes('à tarde')) return 'TARDE';
   if (lower.includes('noite') || lower.includes('à noite') || lower.includes('noturno')) return 'NOITE';
   return null;
@@ -590,7 +591,7 @@ export async function handleMessage(
     db.getSettings(tenantId),
   ]);
 
-  const activeProfessionals = professionals.filter(p => p.active);
+  const activeProfessionals = professionals.filter(p => p.active).map(p => ({ ...p, name: p.name.trim() }));
   const activeServices = services.filter(s => s.active);
 
   let session = getSession(tenantId, phone);
@@ -613,7 +614,7 @@ export async function handleMessage(
 
     if (knownName) {
       session = { tenantId, phone, step: 'WAITING_SERVICE', data: { clientName: knownName }, history: [], updatedAt: Date.now() };
-      const reply = `${greeting}\n\nOlá ${knownName}, que bom ver sua mensagem! 😊\n\nQual procedimento você deseja?\n\n${buildServiceList(activeServices)}`;
+      const reply = `${greeting}\n\nOlá ${knownName}, que bom ver sua mensagem! 😊\n\nQual procedimento gostaria de agendar?`;
       session.history.push({ role: 'bot', text: reply });
       saveSession(session);
       return reply;
@@ -676,7 +677,7 @@ export async function handleMessage(
       }
       session.data.clientName = name;
       session.step = 'WAITING_SERVICE';
-      const reply = `Prazer, ${name}! 😊\n\nQual procedimento você deseja realizar?\n\n${buildServiceList(activeServices)}`;
+      const reply = `Prazer, ${name}! 😊\n\nQual procedimento gostaria de agendar?`;
       session.history.push({ role: 'bot', text: reply }); saveSession(session); return reply;
     }
 
@@ -1031,7 +1032,7 @@ export async function handleMessage(
         clearSession(tenantId, phone);
         const newSession: Session = { tenantId, phone, step: 'WAITING_SERVICE', data: { clientName }, history: h, updatedAt: Date.now() };
         saveSession(newSession);
-        const reply = `Sem problema! Vamos recomeçar. Qual procedimento você deseja?\n\n${buildServiceList(activeServices)}`;
+        const reply = `Sem problema! Vamos recomeçar. Qual procedimento gostaria de agendar?`;
         newSession.history.push({ role: 'bot', text: reply }); saveSession(newSession); return reply;
       }
 
