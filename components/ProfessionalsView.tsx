@@ -19,6 +19,7 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [specialty, setSpecialty] = useState('');
+  const [role, setRole] = useState<'admin' | 'colab'>('colab');
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
@@ -44,7 +45,9 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
     if (!name || !phone) { alert("Nome e Telefone são obrigatórios!"); return; }
     setSaving(true);
     try {
-      await db.addProfessional({ tenant_id: tenantId, name, phone, specialty, active: true });
+      const newPro = await db.addProfessional({ tenant_id: tenantId, name, phone, specialty, active: true });
+      // Save role to settings JSONB after creation
+      await db.updateProfessional(tenantId, newPro.id, { role });
       await load();
       setShowModal(false);
       resetForm();
@@ -59,7 +62,7 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
     if (!editingPro || !name || !phone) return;
     setSaving(true);
     try {
-      await db.updateProfessional(editingPro.id, { name, phone, specialty });
+      await db.updateProfessional(tenantId, editingPro.id, { name, phone, specialty, role });
       await load();
       setEditingPro(null);
       resetForm();
@@ -71,7 +74,7 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
   };
 
   const resetForm = () => {
-    setName(''); setPhone(''); setSpecialty('');
+    setName(''); setPhone(''); setSpecialty(''); setRole('colab');
   };
 
   const applyPreset = (period: string) => {
@@ -142,8 +145,13 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
               <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest">WhatsApp</span>
               <span className="text-sm font-black text-black">{p.phone}</span>
             </div>
+            <div className="mt-3 flex justify-end">
+              <span className={`text-[8px] font-black px-3 py-1 rounded-full uppercase tracking-widest ${p.role === 'admin' ? 'bg-black text-white' : 'bg-slate-100 text-slate-500'}`}>
+                {p.role === 'admin' ? '👑 Admin' : '💈 Colab'}
+              </span>
+            </div>
             <div className="mt-6 flex justify-between items-center">
-              <button onClick={(e) => { e.stopPropagation(); setEditingPro(p); setName(p.name); setPhone(p.phone); setSpecialty(p.specialty); }} className="text-[9px] font-black text-slate-400 uppercase tracking-widest hover:text-black transition-all">
+              <button onClick={(e) => { e.stopPropagation(); setEditingPro(p); setName(p.name); setPhone(p.phone); setSpecialty(p.specialty); setRole(p.role || 'colab'); }} className="text-[9px] font-black text-slate-400 uppercase tracking-widest hover:text-black transition-all">
                 📝 Editar Cadastro
               </button>
               <button onClick={() => setSelectedProForReport(p)} className="text-[10px] font-black text-orange-500 uppercase tracking-[0.2em] group-hover:mr-2 transition-all">
@@ -194,8 +202,33 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
             </h2>
             <div className="space-y-6">
               <input value={name} onChange={e=>setName(e.target.value)} placeholder="Nome Completo" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none font-bold text-sm focus:border-orange-500" />
-              <input value={phone} onChange={e=>setPhone(e.target.value)} placeholder="WhatsApp (55...)" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none font-bold text-sm focus:border-orange-500" />
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-4">WhatsApp Pessoal (para acesso via IA)</label>
+                <input value={phone} onChange={e=>setPhone(e.target.value)} placeholder="5544999999999" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none font-bold text-sm focus:border-orange-500" />
+              </div>
               <input value={specialty} onChange={e=>setSpecialty(e.target.value)} placeholder="Especialidade" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none font-bold text-sm focus:border-orange-500" />
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-4">Nível de Acesso via WhatsApp</label>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setRole('colab')}
+                    className={`py-4 rounded-2xl font-black text-xs uppercase tracking-widest border-2 transition-all ${role === 'colab' ? 'bg-slate-800 text-white border-slate-800' : 'bg-slate-50 text-slate-400 border-slate-100 hover:border-slate-400'}`}
+                  >
+                    💈 Colaborador
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRole('admin')}
+                    className={`py-4 rounded-2xl font-black text-xs uppercase tracking-widest border-2 transition-all ${role === 'admin' ? 'bg-black text-white border-black' : 'bg-slate-50 text-slate-400 border-slate-100 hover:border-black'}`}
+                  >
+                    👑 Admin
+                  </button>
+                </div>
+                <p className="text-[9px] font-bold text-slate-300 ml-4 mt-1">
+                  {role === 'admin' ? 'Acesso total: agendamentos, stats e financeiro' : 'Acesso restrito: apenas seus próprios agendamentos'}
+                </p>
+              </div>
             </div>
             <div className="flex gap-4 pt-4">
               <button onClick={()=>{setShowModal(false); setEditingPro(null); resetForm();}} className="flex-1 py-4 font-black text-slate-400 uppercase text-xs" disabled={saving}>Cancelar</button>

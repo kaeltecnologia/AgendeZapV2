@@ -161,15 +161,28 @@ const EvolutionConfig: React.FC<{ tenantId: string; tenantSlug?: string }> = ({ 
           </div>
 
           <div className="w-full space-y-4">
-            <button 
-              onClick={() => handleConnect(false)} 
+            <button
+              onClick={() => handleConnect(false)}
               disabled={loading || instanceStatus === 'open'}
               className={`w-full py-5 rounded-2xl font-black text-xs uppercase tracking-widest transition-all shadow-xl active:scale-95 ${instanceStatus === 'open' ? 'bg-slate-100 text-slate-400 cursor-default' : 'bg-orange-500 text-white hover:bg-black shadow-orange-100'}`}
             >
               {loading ? 'SINCRONIZANDO...' : instanceStatus === 'open' ? 'CONEXÃO ATIVA' : 'SOLICITAR QR CODE'}
             </button>
-            
-            <button 
+
+            {tenantSlug && (
+              <button
+                onClick={() => {
+                  const url = `${window.location.origin}${window.location.pathname}#/agendar/${tenantSlug}`;
+                  window.open(url, '_blank');
+                }}
+                className="w-full bg-white border-2 border-slate-100 text-slate-600 py-3 rounded-2xl font-black text-[9px] uppercase tracking-widest hover:border-orange-500 hover:text-orange-500 transition-all flex items-center justify-center gap-2"
+              >
+                <span>🔗</span>
+                <span>Ver Link Web de Agendamento</span>
+              </button>
+            )}
+
+            <button
               onClick={() => { if(confirm("Isso apagará a instância atual e criará uma nova. Deseja continuar?")) handleConnect(true); }}
               className="w-full bg-white text-slate-300 py-3 rounded-2xl font-black text-[9px] uppercase tracking-widest hover:text-red-500 hover:border-red-100 transition-all border-2 border-slate-50"
             >

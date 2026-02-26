@@ -12,9 +12,14 @@ import StoreProfile from './components/StoreProfile';
 import FinancialView from './components/FinancialView';
 import GeneralSettings from './components/GeneralSettings';
 import FollowUpView from './components/FollowUpView';
+import PlansView from './components/PlansView';
+import ConversationsView from './components/ConversationsView';
+import BroadcastView from './components/BroadcastView';
+import ConexoesView from './components/ConexoesView';
 import SuperAdminView from './components/SuperAdminView';
 import Login from './components/Login';
 import AiPollingManager from './components/AiPollingManager';
+import BookingPage from './components/BookingPage';
 import { db } from './services/mockDb';
 import { TenantStatus } from './types';
 
@@ -24,14 +29,15 @@ enum View {
   SERVICOS = 'SERVICOS',
   PROFISSIONAIS = 'PROFISSIONAIS',
   CLIENTES = 'CLIENTES',
-  AGENTE_AI = 'AGENTE_AI',
   PERFIL = 'PERFIL',
   FINANCEIRO = 'FINANCEIRO',
-  CONNECT_WA = 'CONNECT_WA',
+  CONEXOES = 'CONEXOES',
   FOLLOW_UP = 'FOLLOW_UP',
-  LINK_WEB = 'LINK_WEB',
   TEST_WA = 'TEST_WA',
   CONFIGURACOES = 'CONFIGURACOES',
+  PLANOS = 'PLANOS',
+  CONVERSAS = 'CONVERSAS',
+  DISPARADOR = 'DISPARADOR',
   SUPERADMIN_DASHBOARD = 'SUPERADMIN_DASHBOARD'
 }
 
@@ -45,6 +51,17 @@ const App: React.FC = () => {
   const [tenantSlug, setTenantSlug] = useState<string>('');
   const [tenantName, setTenantName] = useState<string>('Carregando...');
   const [isReady, setIsReady] = useState(false);
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem('agz_dark') === '1');
+
+  useEffect(() => {
+    if (darkMode) {
+      document.documentElement.classList.add('dark');
+      localStorage.setItem('agz_dark', '1');
+    } else {
+      document.documentElement.classList.remove('dark');
+      localStorage.setItem('agz_dark', '0');
+    }
+  }, [darkMode]);
 
   useEffect(() => {
     const init = async () => {
@@ -141,6 +158,13 @@ const App: React.FC = () => {
     setCurrentView(View.DASHBOARD);
   };
 
+  // Public booking page — no auth required
+  const bookingSlug = (() => {
+    const m = window.location.hash.match(/^#\/agendar\/(.+)$/);
+    return m ? m[1] : null;
+  })();
+  if (bookingSlug) return <BookingPage slug={bookingSlug} />;
+
   if (!isReady) {
     return (
       <div className="min-h-screen bg-white flex flex-col items-center justify-center space-y-4">
@@ -163,12 +187,14 @@ const App: React.FC = () => {
       case View.SERVICOS: return <ServicesView tenantId={tenantId} />;
       case View.PROFISSIONAIS: return <ProfessionalsView tenantId={tenantId} />;
       case View.CLIENTES: return <CustomersView tenantId={tenantId} />;
-      case View.AGENTE_AI: return <AiAgentConfig tenantId={tenantId} />;
       case View.PERFIL: return <StoreProfile tenantId={tenantId} />;
       case View.FINANCEIRO: return <FinancialView tenantId={tenantId} />;
-      case View.CONNECT_WA: return <EvolutionConfig tenantId={tenantId} tenantSlug={tenantSlug} />;
+      case View.CONEXOES: return <ConexoesView tenantId={tenantId} tenantSlug={tenantSlug} />;
       case View.FOLLOW_UP: return <FollowUpView tenantId={tenantId} />;
+      case View.PLANOS: return <PlansView tenantId={tenantId} />;
       case View.TEST_WA: return <AIChatSimulator tenantId={tenantId} />;
+      case View.CONVERSAS: return <ConversationsView tenantId={tenantId} />;
+      case View.DISPARADOR: return <BroadcastView tenantId={tenantId} />;
       case View.CONFIGURACOES: return <GeneralSettings tenantId={tenantId} />;
       default: return <Dashboard tenantId={tenantId} />;
     }
@@ -199,10 +225,12 @@ const App: React.FC = () => {
               <NavItem active={currentView === View.FINANCEIRO} onClick={() => setCurrentView(View.FINANCEIRO)} icon={<IconFinance />} label="Caixa" />
               
               <div className="pt-6 pb-2 mt-4 border-t border-slate-100">
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-3 px-4">Integração</p>
-                <NavItem active={currentView === View.CONNECT_WA} onClick={() => setCurrentView(View.CONNECT_WA)} icon={<IconWhatsapp />} label="WhatsApp" color="text-green-600" />
-                <NavItem active={currentView === View.AGENTE_AI} onClick={() => setCurrentView(View.AGENTE_AI)} icon={<IconRobot />} label="Agente IA" />
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-3 px-4">Conexões</p>
+                <NavItem active={currentView === View.CONEXOES} onClick={() => setCurrentView(View.CONEXOES)} icon={<IconWhatsapp />} label="Conexões" color="text-green-600" />
+                <NavItem active={currentView === View.CONVERSAS} onClick={() => setCurrentView(View.CONVERSAS)} icon={<IconChat />} label="Conversas" />
+                <NavItem active={currentView === View.DISPARADOR} onClick={() => setCurrentView(View.DISPARADOR)} icon={<IconBroadcast />} label="Disparador" />
                 <NavItem active={currentView === View.FOLLOW_UP} onClick={() => setCurrentView(View.FOLLOW_UP)} icon={<IconClock />} label="Lembretes" />
+                <NavItem active={currentView === View.PLANOS} onClick={() => setCurrentView(View.PLANOS)} icon={<IconPlans />} label="Planos" />
               </div>
             </>
           )}
@@ -213,13 +241,7 @@ const App: React.FC = () => {
           </div>
         </nav>
 
-        <div className="p-6 border-t border-slate-100 bg-slate-50/50 space-y-4">
-          <div className="flex items-center space-x-3">
-             <div className={`w-2 h-2 rounded-full ${dbOnline ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></div>
-             <span className={`text-[8px] font-black uppercase tracking-widest ${dbOnline ? 'text-green-600' : 'text-red-600'}`}>
-               Supabase: {dbOnline ? 'ONLINE' : 'OFFLINE'}
-             </span>
-          </div>
+        <div className="p-6 border-t border-slate-100 bg-slate-50/50">
           <button onClick={handleLogout} className="flex items-center space-x-3 w-full text-slate-400 hover:text-red-500 transition-all font-bold text-xs uppercase tracking-widest">
             <IconLogout /> <span>Sair</span>
           </button>
@@ -227,16 +249,26 @@ const App: React.FC = () => {
       </aside>
 
       <main className="flex-1 overflow-auto h-screen relative">
-        <header className="px-10 py-8 flex items-center justify-between sticky top-0 bg-white/80 backdrop-blur-md z-40 border-b border-slate-100">
+        <header className="px-10 py-6 flex items-center justify-between sticky top-0 bg-white/80 backdrop-blur-md z-40 border-b border-slate-100">
           <div>
             <h2 className="text-xl font-black text-black tracking-tight uppercase">{role === 'SUPERADMIN' ? 'Gestão Global do SaaS' : tenantName}</h2>
           </div>
-          {!dbOnline && (
-            <div className="bg-red-50 border border-red-100 px-4 py-2 rounded-xl flex items-center space-x-3">
-              <span className="text-[10px] font-black text-red-600 uppercase">Modo Offline (Cache Local)</span>
-              <button onClick={() => window.location.reload()} className="text-[9px] font-black text-red-500 underline uppercase">Reconectar</button>
-            </div>
-          )}
+          <div className="flex items-center gap-3">
+            {!dbOnline && (
+              <div className="bg-red-50 border border-red-100 px-4 py-2 rounded-xl flex items-center space-x-3">
+                <span className="text-[10px] font-black text-red-600 uppercase">Modo Offline</span>
+                <button onClick={() => window.location.reload()} className="text-[9px] font-black text-red-500 underline uppercase">Reconectar</button>
+              </div>
+            )}
+            {/* Dark mode toggle */}
+            <button
+              onClick={() => setDarkMode(d => !d)}
+              title={darkMode ? 'Modo Claro' : 'Modo Escuro'}
+              className="w-10 h-10 rounded-2xl border-2 border-slate-100 bg-white flex items-center justify-center text-lg hover:border-orange-500 transition-all shadow-sm"
+            >
+              {darkMode ? '☀️' : '🌙'}
+            </button>
+          </div>
         </header>
         <div className="p-10">{renderView()}</div>
       </main>
@@ -263,5 +295,8 @@ const IconClock = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h
 const IconSettings = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1-2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>;
 const IconTerminal = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>;
 const IconLogout = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>;
+const IconPlans = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/><line x1="12" y1="12" x2="12" y2="16"/><line x1="10" y1="14" x2="14" y2="14"/></svg>;
+const IconChat = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>;
+const IconBroadcast = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>;
 
 export default App;

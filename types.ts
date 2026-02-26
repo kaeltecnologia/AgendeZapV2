@@ -9,7 +9,8 @@ export enum AppointmentStatus {
 export enum BookingSource {
   AI = 'AI',
   MANUAL = 'MANUAL',
-  WEB = 'WEB'
+  WEB = 'WEB',
+  PLAN = 'PLAN'   // Appointment under an active plan — not charged financially
 }
 
 export enum PaymentMethod {
@@ -39,6 +40,47 @@ export interface FollowUpConfig {
   fixedTime?: string; // For "Aviso do Dia" (HH:mm)
 }
 
+// Break / interval period — blocks agent from booking during this window
+export interface BreakPeriod {
+  id: string;
+  label: string;
+  professionalId?: string | null; // null or absent = applies to all professionals
+  date?: string | null;           // YYYY-MM-DD, one-time; null = recurring
+  dayOfWeek?: number | null;      // 0-6 for weekly-recurring; null = every day
+  startTime: string;              // HH:mm
+  endTime: string;                // HH:mm
+}
+
+// Monthly / recurring service plan (package)
+export interface Plan {
+  id: string;
+  tenant_id: string;
+  name: string;
+  description: string;
+  price: number;             // monthly fee
+  proceduresPerMonth: number;// how many procedures are covered per month
+  serviceId?: string;        // specific service covered (optional)
+  features: string[];        // list of included services / notes
+  active: boolean;
+}
+
+// Custom follow-up mode (created by admin, assigned per customer)
+export interface FollowUpMode {
+  id: string;
+  name: string;
+  description: string;
+}
+
+// Named follow-up strategy template per type (aviso / lembrete / reativacao)
+export interface FollowUpNamedMode {
+  id: string;
+  name: string;
+  active: boolean;
+  message: string;
+  timing: number;        // minutes (lembrete), days (reativacao), irrelevant for aviso
+  fixedTime?: string;   // HH:mm — used by aviso type
+}
+
 export interface TenantSettings {
   followUp: {
     aviso: FollowUpConfig;
@@ -50,6 +92,24 @@ export interface TenantSettings {
   };
   aiActive: boolean;
   themeColor: string;
+  whatsapp?: string;                   // official WhatsApp number
+  breaks?: BreakPeriod[];              // break / interval blocks
+  customModes?: FollowUpMode[];        // legacy custom follow-up modes
+  avisoModes?: FollowUpNamedMode[];    // named check-in strategies
+  lembreteModes?: FollowUpNamedMode[]; // named reminder strategies
+  reativacaoModes?: FollowUpNamedMode[];// named reactivation strategies
+  plans?: Plan[];                       // monthly plans (stored in JSONB)
+  planUsage?: Record<string, number>;   // { "customerId::YYYY-MM": count }
+  professionalMeta?: Record<string, {   // per-professional role (stored in JSONB)
+    role: 'admin' | 'colab';
+  }>;
+  customerData?: Record<string, {       // per-customer plan/mode data (stored in JSONB)
+    planId?: string | null;
+    planServiceId?: string | null;
+    avisoModeId?: string;
+    lembreteModeId?: string;
+    reativacaoModeId?: string;
+  }>;
 }
 
 export interface Appointment {
@@ -58,7 +118,7 @@ export interface Appointment {
   customer_id: string;
   professional_id: string;
   service_id: string;
-  startTime: string; 
+  startTime: string;
   durationMinutes: number;
   status: AppointmentStatus;
   source: BookingSource;
@@ -66,6 +126,7 @@ export interface Appointment {
   amountPaid?: number;
   extraNote?: string;
   extraValue?: number;
+  isPlan?: boolean; // if true, appointment is covered by a plan → excluded from financial totals
 }
 
 export interface Expense {
@@ -103,6 +164,7 @@ export interface Professional {
   phone: string;
   specialty: string;
   active: boolean;
+  role?: 'admin' | 'colab'; // 'admin' = proprietário (acesso total), 'colab' = funcionário (próprios dados)
 }
 
 export interface Service {
@@ -126,4 +188,9 @@ export interface Customer {
     lembrete: boolean;
     reativacao: boolean;
   };
+  avisoModeId?: string;       // named aviso mode id (or 'standard')
+  lembreteModeId?: string;    // named lembrete mode id (or 'standard')
+  reativacaoModeId?: string;  // named reativacao mode id (or 'standard')
+  planId?: string | null;     // active plan id
+  planServiceId?: string | null; // specific service covered by plan
 }

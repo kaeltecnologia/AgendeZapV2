@@ -1,4 +1,3 @@
-
 import { db } from './mockDb';
 
 export const EVOLUTION_API_URL = "https://evolution-api-agendezap-evolution-api.xzftjp.easypanel.host";
@@ -19,10 +18,6 @@ export const evolutionService = {
     return new Promise(resolve => setTimeout(resolve, ms));
   },
 
-  /**
-   * Obtém o nome da instância baseado EXCLUSIVAMENTE no slug da barbearia.
-   * Adiciona o prefixo 'agz_' para evitar conflitos.
-   */
   getInstanceName(slug: string) {
     if (!slug) return '';
     const cleanSlug = slug.toLowerCase()
@@ -57,7 +52,10 @@ export const evolutionService = {
       const response = await fetch(`${EVOLUTION_API_URL}/chat/findMessages/${instanceName}`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ count, page: 1 })
+        body: JSON.stringify({
+          where: {},
+          limit: count
+        })
       });
       if (!response.ok) return null;
       const data = await response.json();
@@ -80,7 +78,6 @@ export const evolutionService = {
           linkPreview: false
         })
       });
-
       if (response.ok) return { success: true };
       const errData = await response.json();
       return { success: false, error: errData.message || "Falha ao enviar" };
@@ -121,14 +118,11 @@ export const evolutionService = {
 
   async createAndFetchQr(instanceName: string): Promise<any> {
     if (!instanceName) return { status: 'error', message: 'Nome da instância inválido.' };
-    
     try {
-      // 1. Tentar verificar se já existe para evitar erro 409
-      const statusResponse = await fetch(`${EVOLUTION_API_URL}/instance/fetchInstances?instanceName=${instanceName}`, { 
-        method: 'GET', 
-        headers 
+      const statusResponse = await fetch(`${EVOLUTION_API_URL}/instance/fetchInstances?instanceName=${instanceName}`, {
+        method: 'GET',
+        headers
       });
-      
       let instanceExists = false;
       if (statusResponse.ok) {
         const instances = await statusResponse.json();
@@ -136,13 +130,12 @@ export const evolutionService = {
       }
 
       if (!instanceExists) {
-        // 2. Criar a instância apenas se não existir
         const createRes = await fetch(`${EVOLUTION_API_URL}/instance/create`, {
           method: 'POST',
           headers,
-          body: JSON.stringify({ 
-            instanceName, 
-            token: EVOLUTION_API_KEY, 
+          body: JSON.stringify({
+            instanceName,
+            token: EVOLUTION_API_KEY,
             qrcode: true,
             integration: "WHATSAPP-BAILEYS"
           })
@@ -152,21 +145,18 @@ export const evolutionService = {
           throw new Error(errData.message || "Erro ao criar instância no servidor Evolution.");
         }
       }
-      
+
       await this.sleep(1500);
 
-      // 3. Conectar/Pegar QR
-      const connectResponse = await fetch(`${EVOLUTION_API_URL}/instance/connect/${instanceName}`, { 
-        method: 'GET', 
-        headers 
+      const connectResponse = await fetch(`${EVOLUTION_API_URL}/instance/connect/${instanceName}`, {
+        method: 'GET',
+        headers
       });
-      
       if (!connectResponse.ok) {
-         throw new Error("Servidor Evolution não respondeu ao pedido de conexão.");
+        throw new Error("Servidor Evolution não respondeu ao pedido de conexão.");
       }
 
       const data = await connectResponse.json();
-      
       if (data.instance?.state === 'open' || data.state === 'open') {
         return { status: 'success', qrcode: null, message: 'Conectado.' };
       }
@@ -176,12 +166,7 @@ export const evolutionService = {
         return { status: 'error', message: 'QR Code ainda não disponível. Tente novamente em alguns segundos.' };
       }
 
-      return { 
-        status: 'success', 
-        qrcode: qr,
-        message: 'QR Code Gerado.'
-      };
-      
+      return { status: 'success', qrcode: qr, message: 'QR Code Gerado.' };
     } catch (e: any) {
       return { status: 'error', message: e.message || 'Erro inesperado na Evolution API.' };
     }
