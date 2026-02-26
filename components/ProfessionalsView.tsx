@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { db } from '../services/mockDb';
 import { Professional, AppointmentStatus, Appointment, Expense, BreakPeriod } from '../types';
@@ -21,13 +20,11 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
   const [editingPro, setEditingPro] = useState<Professional | null>(null);
   const [selectedProForReport, setSelectedProForReport] = useState<Professional | null>(null);
 
-  // Lunch modal
   const [lunchPro, setLunchPro] = useState<Professional | null>(null);
   const [lunchStart, setLunchStart] = useState('12:00');
   const [lunchEnd, setLunchEnd] = useState('13:00');
-  const [lunchDays, setLunchDays] = useState<number[]>([1, 2, 3, 4, 5]); // Mon–Fri default
+  const [lunchDays, setLunchDays] = useState<number[]>([1, 2, 3, 4, 5]);
 
-  // Vacation modal
   const [vacPro, setVacPro] = useState<Professional | null>(null);
   const [vacStart, setVacStart] = useState('');
   const [vacEnd, setVacEnd] = useState('');
@@ -90,14 +87,11 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
 
   const resetForm = () => { setName(''); setPhone(''); setSpecialty(''); setRole('colab'); };
 
-  // ── LUNCH BREAK ────────────────────────────────────────────────────
   const openLunch = (pro: Professional) => {
-    // Pre-fill existing lunch break if any
     const existing = breaks.find(b => b.type === 'lunch' && b.professionalId === pro.id);
     if (existing) {
       setLunchStart(existing.startTime);
       setLunchEnd(existing.endTime);
-      // existing.dayOfWeek is null for "every day" — use all days
       setLunchDays(existing.dayOfWeek == null ? [0, 1, 2, 3, 4, 5, 6] : [existing.dayOfWeek]);
     } else {
       setLunchStart('12:00'); setLunchEnd('13:00'); setLunchDays([1, 2, 3, 4, 5]);
@@ -109,21 +103,11 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
     if (!lunchPro) return;
     setSaving(true);
     try {
-      // Remove old lunch breaks for this professional
       const withoutOld = breaks.filter(b => !(b.type === 'lunch' && b.professionalId === lunchPro.id));
-      // Create one break per selected day (or one with dayOfWeek=null for all)
       const allDays = lunchDays.length === 7;
       const newBreaks: BreakPeriod[] = allDays
-        ? [{
-            id: genId(), type: 'lunch', label: `Almoço — ${lunchPro.name}`,
-            professionalId: lunchPro.id, dayOfWeek: null, date: null,
-            startTime: lunchStart, endTime: lunchEnd,
-          }]
-        : lunchDays.map(d => ({
-            id: genId(), type: 'lunch' as const, label: `Almoço — ${lunchPro.name}`,
-            professionalId: lunchPro.id, dayOfWeek: d, date: null,
-            startTime: lunchStart, endTime: lunchEnd,
-          }));
+        ? [{ id: genId(), type: 'lunch', label: `Almoço — ${lunchPro.name}`, professionalId: lunchPro.id, dayOfWeek: null, date: null, startTime: lunchStart, endTime: lunchEnd }]
+        : lunchDays.map(d => ({ id: genId(), type: 'lunch' as const, label: `Almoço — ${lunchPro.name}`, professionalId: lunchPro.id, dayOfWeek: d, date: null, startTime: lunchStart, endTime: lunchEnd }));
       await db.saveBreaks(tenantId, [...withoutOld, ...newBreaks]);
       await load();
       setLunchPro(null);
@@ -141,7 +125,6 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
     } finally { setSaving(false); }
   };
 
-  // ── VACATION ───────────────────────────────────────────────────────
   const openVacation = (pro: Professional) => {
     const existing = breaks.find(b => b.type === 'vacation' && b.professionalId === pro.id);
     if (existing) {
@@ -158,11 +141,7 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
     setSaving(true);
     try {
       const withoutOld = breaks.filter(b => !(b.type === 'vacation' && b.professionalId === vacPro.id));
-      const vac: BreakPeriod = {
-        id: genId(), type: 'vacation', label: `Férias — ${vacPro.name}`,
-        professionalId: vacPro.id, date: vacStart, vacationEndDate: vacEnd,
-        dayOfWeek: null, startTime: '00:00', endTime: '23:59',
-      };
+      const vac: BreakPeriod = { id: genId(), type: 'vacation', label: `Férias — ${vacPro.name}`, professionalId: vacPro.id, date: vacStart, vacationEndDate: vacEnd, dayOfWeek: null, startTime: '00:00', endTime: '23:59' };
       await db.saveBreaks(tenantId, [...withoutOld, vac]);
       await load();
       setVacPro(null);
@@ -180,7 +159,6 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
     } finally { setSaving(false); }
   };
 
-  // ── REPORT ────────────────────────────────────────────────────────
   const applyPreset = (period: string) => {
     setPresetPeriod(period);
     const now = new Date();
@@ -223,7 +201,6 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
 
   const getLunchInfo = (pro: Professional) => breaks.find(b => b.type === 'lunch' && b.professionalId === pro.id);
   const getVacInfo = (pro: Professional) => breaks.find(b => b.type === 'vacation' && b.professionalId === pro.id);
-
   const toggleLunchDay = (d: number) =>
     setLunchDays(prev => prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d]);
 
@@ -245,7 +222,6 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
           const vac = getVacInfo(p);
           return (
             <div key={p.id} className="bg-white p-8 rounded-[40px] border-2 border-slate-100 shadow-xl shadow-slate-100/50 relative group hover:border-orange-500 transition-all">
-              {/* Header */}
               <div className="flex items-center space-x-5 mb-6 cursor-pointer" onClick={() => setSelectedProForReport(p)}>
                 <div className="w-16 h-16 bg-black text-white rounded-[24px] flex items-center justify-center text-2xl font-black group-hover:bg-orange-500 transition-all shadow-lg">
                   {p.name[0]}
@@ -258,8 +234,6 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
                   </span>
                 </div>
               </div>
-
-              {/* Status badges */}
               <div className="space-y-1.5 mb-5">
                 {lunch && (
                   <div className="flex items-center gap-2 bg-amber-50 border border-amber-100 rounded-xl px-3 py-1.5">
@@ -274,8 +248,6 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
                   </div>
                 )}
               </div>
-
-              {/* Actions */}
               <div className="border-t-2 border-slate-50 pt-4 space-y-2">
                 <div className="flex gap-2">
                   <button onClick={() => openLunch(p)} className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-amber-50 hover:bg-amber-100 text-amber-700 rounded-xl font-black text-[9px] uppercase tracking-widest transition-all">
@@ -302,8 +274,8 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
 
       {/* ── LUNCH MODAL ─────────────────────────────────────────────── */}
       {lunchPro && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-          <div className="bg-white rounded-[40px] w-full max-w-sm p-10 space-y-6 animate-scaleUp border-4 border-black">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-[40px] w-full max-w-sm p-8 space-y-6 animate-scaleUp border-4 border-black my-auto">
             <div className="flex items-center gap-3">
               <span className="text-2xl">🍽️</span>
               <div>
@@ -311,7 +283,6 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{lunchPro.name}</p>
               </div>
             </div>
-
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -325,7 +296,6 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
                     className="w-full p-3 bg-slate-50 border-2 border-slate-100 rounded-2xl font-black text-center outline-none focus:border-amber-400" />
                 </div>
               </div>
-
               <div>
                 <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-2">Dias da semana</label>
                 <div className="flex gap-1.5 flex-wrap">
@@ -338,7 +308,6 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
                 </div>
               </div>
             </div>
-
             <div className="flex gap-3 pt-2">
               {breaks.some(b => b.type === 'lunch' && b.professionalId === lunchPro.id) && (
                 <button onClick={removeLunch} disabled={saving} className="px-4 py-3 bg-red-50 text-red-500 rounded-2xl font-black text-[9px] uppercase hover:bg-red-100 transition-all">
@@ -356,8 +325,8 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
 
       {/* ── VACATION MODAL ───────────────────────────────────────────── */}
       {vacPro && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-          <div className="bg-white rounded-[40px] w-full max-w-sm p-10 space-y-6 animate-scaleUp border-4 border-black">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-[40px] w-full max-w-sm p-8 space-y-6 animate-scaleUp border-4 border-black my-auto">
             <div className="flex items-center gap-3">
               <span className="text-2xl">🌴</span>
               <div>
@@ -380,7 +349,6 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
                   className="w-full p-3 bg-slate-50 border-2 border-slate-100 rounded-2xl font-black outline-none focus:border-blue-400" />
               </div>
             </div>
-
             <div className="flex gap-3 pt-2">
               {breaks.some(b => b.type === 'vacation' && b.professionalId === vacPro.id) && (
                 <button onClick={removeVacation} disabled={saving} className="px-4 py-3 bg-red-50 text-red-500 rounded-2xl font-black text-[9px] uppercase hover:bg-red-100 transition-all">
@@ -431,29 +399,42 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
 
       {/* ── ADD/EDIT PRO MODAL ───────────────────────────────────────── */}
       {(showModal || editingPro) && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-          <div className="bg-white rounded-[40px] w-full max-w-md p-12 space-y-8 animate-scaleUp border-4 border-black">
-            <h2 className="text-3xl font-black text-black uppercase tracking-tight italic">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-[40px] w-full max-w-md p-8 space-y-6 animate-scaleUp border-4 border-black my-auto">
+            <h2 className="text-2xl font-black text-black uppercase tracking-tight italic">
               {editingPro ? 'Editar Barbeiro' : 'Novo Barbeiro'}
             </h2>
-            <div className="space-y-6">
-              <input value={name} onChange={e => setName(e.target.value)} placeholder="Nome Completo" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none font-bold text-sm focus:border-orange-500" />
+            <div className="space-y-4">
+              <input value={name} onChange={e => setName(e.target.value)} placeholder="Nome Completo"
+                className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none font-bold text-sm focus:border-orange-500" />
               <div className="space-y-1">
                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-4">WhatsApp Pessoal</label>
-                <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="5544999999999" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none font-bold text-sm focus:border-orange-500" />
+                <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="5544999999999"
+                  className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none font-bold text-sm focus:border-orange-500" />
               </div>
-              <input value={specialty} onChange={e => setSpecialty(e.target.value)} placeholder="Especialidade" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none font-bold text-sm focus:border-orange-500" />
+              <input value={specialty} onChange={e => setSpecialty(e.target.value)} placeholder="Especialidade"
+                className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none font-bold text-sm focus:border-orange-500" />
               <div className="space-y-1">
                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-4">Nível de Acesso</label>
                 <div className="grid grid-cols-2 gap-3">
-                  <button type="button" onClick={() => setRole('colab')} className={`py-4 rounded-2xl font-black text-xs uppercase tracking-widest border-2 transition-all ${role === 'colab' ? 'bg-slate-800 text-white border-slate-800' : 'bg-slate-50 text-slate-400 border-slate-100 hover:border-slate-400'}`}>💈 Colaborador</button>
-                  <button type="button" onClick={() => setRole('admin')} className={`py-4 rounded-2xl font-black text-xs uppercase tracking-widest border-2 transition-all ${role === 'admin' ? 'bg-black text-white border-black' : 'bg-slate-50 text-slate-400 border-slate-100 hover:border-black'}`}>👑 Admin</button>
+                  <button type="button" onClick={() => setRole('colab')}
+                    className={`py-3 rounded-2xl font-black text-xs uppercase tracking-widest border-2 transition-all ${role === 'colab' ? 'bg-slate-800 text-white border-slate-800' : 'bg-slate-50 text-slate-400 border-slate-100 hover:border-slate-400'}`}>
+                    💈 Colaborador
+                  </button>
+                  <button type="button" onClick={() => setRole('admin')}
+                    className={`py-3 rounded-2xl font-black text-xs uppercase tracking-widest border-2 transition-all ${role === 'admin' ? 'bg-black text-white border-black' : 'bg-slate-50 text-slate-400 border-slate-100 hover:border-black'}`}>
+                    👑 Admin
+                  </button>
                 </div>
               </div>
             </div>
-            <div className="flex gap-4 pt-4">
-              <button onClick={() => { setShowModal(false); setEditingPro(null); resetForm(); }} className="flex-1 py-4 font-black text-slate-400 uppercase text-xs" disabled={saving}>Cancelar</button>
-              <button onClick={editingPro ? handleEdit : handleAdd} className="flex-1 py-4 bg-black text-white rounded-2xl font-black uppercase text-xs shadow-xl hover:bg-orange-500 transition-all disabled:opacity-50" disabled={saving}>
+            <div className="flex gap-4 pt-2">
+              <button onClick={() => { setShowModal(false); setEditingPro(null); resetForm(); }}
+                className="flex-1 py-4 font-black text-slate-400 uppercase text-xs" disabled={saving}>
+                Cancelar
+              </button>
+              <button onClick={editingPro ? handleEdit : handleAdd}
+                className="flex-1 py-4 bg-black text-white rounded-2xl font-black uppercase text-xs shadow-xl hover:bg-orange-500 transition-all disabled:opacity-50" disabled={saving}>
                 {saving ? 'Gravando...' : editingPro ? 'Salvar Alterações' : 'Confirmar Cadastro'}
               </button>
             </div>

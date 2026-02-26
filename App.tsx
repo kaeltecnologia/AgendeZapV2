@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import Dashboard from './components/Dashboard';
 import EvolutionConfig from './components/EvolutionConfig';
@@ -95,10 +94,8 @@ const App: React.FC = () => {
         const targetSlug = userSlug.toLowerCase().trim();
         const tenants = await db.getAllTenants();
 
-        // 1st try: find by slug (fast path for self-registered tenants)
         let myTenant = tenants.find(t => t.slug === targetSlug);
 
-        // 2nd try: find by stored email (for SuperAdmin-created tenants with custom email)
         if (!myTenant && userEmail) {
           myTenant = tenants.find(t => t.email?.toLowerCase() === userEmail.toLowerCase());
         }
@@ -109,7 +106,6 @@ const App: React.FC = () => {
           return;
         }
 
-        // Validate password if one is stored for this tenant
         if (myTenant.password && userPassword && myTenant.password !== userPassword) {
           alert("Senha incorreta.");
           return;
@@ -191,7 +187,6 @@ const App: React.FC = () => {
     setCurrentView(View.SUPERADMIN_DASHBOARD);
   };
 
-  // Public booking page — no auth required
   const bookingSlug = (() => {
     const m = window.location.hash.match(/^#\/agendar\/(.+)$/);
     return m ? m[1] : null;
@@ -237,10 +232,12 @@ const App: React.FC = () => {
   const dbOnline = db.isOnline();
 
   return (
-    <div className="flex min-h-screen bg-slate-50/30">
+    // ✅ CORREÇÃO: sem overflow nem transform aqui — deixa fixed dos modais escapar para a viewport
+    <div className="flex h-screen bg-slate-50/30">
       {tenantId && <AiPollingManager tenantId={tenantId} />}
 
-      <aside className="w-64 bg-white flex flex-col sticky top-0 h-screen shrink-0 border-r border-slate-200 z-50">
+      {/* Sidebar — scroll interno próprio */}
+      <aside className="w-64 bg-white flex flex-col shrink-0 border-r border-slate-200 z-50 h-screen sticky top-0">
         <div className="p-8 flex flex-col space-y-2">
           <h1 className="text-2xl font-black text-black tracking-tighter uppercase italic">AgendeZap</h1>
           {role === 'SUPERADMIN' && <span className="bg-orange-500 text-white text-[8px] font-black px-2 py-0.5 rounded-full w-fit tracking-widest uppercase">SUPER ADMIN</span>}
@@ -268,7 +265,7 @@ const App: React.FC = () => {
               <NavItem active={currentView === View.CLIENTES} onClick={() => setCurrentView(View.CLIENTES)} icon={<IconUserCircle />} label="Clientes" />
               <NavItem active={currentView === View.FINANCEIRO} onClick={() => setCurrentView(View.FINANCEIRO)} icon={<IconFinance />} label="Caixa" />
               <NavItem active={currentView === View.ESTOQUE} onClick={() => setCurrentView(View.ESTOQUE)} icon={<IconBox />} label="Estoque" />
-              
+
               <div className="pt-6 pb-2 mt-4 border-t border-slate-100">
                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-3 px-4">Conexões</p>
                 <NavItem active={currentView === View.CONEXOES} onClick={() => setCurrentView(View.CONEXOES)} icon={<IconWhatsapp />} label="Conexões" color="text-green-600" />
@@ -298,8 +295,9 @@ const App: React.FC = () => {
         </div>
       </aside>
 
-      <main className="flex-1 overflow-auto h-screen relative">
-        <header className="px-10 py-6 flex items-center justify-between sticky top-0 bg-white/80 backdrop-blur-md z-40 border-b border-slate-100">
+      {/* ✅ CORREÇÃO PRINCIPAL: main sem overflow-auto — o scroll fica no div interno */}
+      <main className="flex-1 flex flex-col min-w-0">
+        <header className="px-10 py-6 flex items-center justify-between shrink-0 bg-white/80 backdrop-blur-md z-40 border-b border-slate-100 sticky top-0">
           <div>
             <h2 className="text-xl font-black text-black tracking-tight uppercase">
               {role === 'SUPERADMIN'
@@ -314,7 +312,6 @@ const App: React.FC = () => {
                 <button onClick={() => window.location.reload()} className="text-[9px] font-black text-red-500 underline uppercase">Reconectar</button>
               </div>
             )}
-            {/* Dark mode toggle */}
             <button
               onClick={() => setDarkMode(d => !d)}
               title={darkMode ? 'Modo Claro' : 'Modo Escuro'}
@@ -324,7 +321,11 @@ const App: React.FC = () => {
             </button>
           </div>
         </header>
-        <div className="p-10">{renderView()}</div>
+
+        {/* ✅ Scroll acontece aqui, não no main — fixed dos modais escapa para a viewport corretamente */}
+        <div className="flex-1 overflow-y-auto">
+          <div className="p-10">{renderView()}</div>
+        </div>
       </main>
     </div>
   );
@@ -342,7 +343,6 @@ const IconCalendar = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-
 const IconScissors = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="6" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><line x1="20" y1="4" x2="8.12" y2="15.88"></line><line x1="14.47" y1="14.48" x2="20" y2="20"></line><line x1="8.12" y1="8.12" x2="12" y2="12"></line></svg>;
 const IconUsers = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>;
 const IconUserCircle = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="10" r="3"></circle><path d="M7 20.662V19a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v1.662"></path></svg>;
-const IconRobot = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"></rect><circle cx="12" cy="5" r="2"></circle><path d="M12 7v4"></path><line x1="8" y1="16" x2="8" y2="16"></line><line x1="16" y1="16" x2="16" y2="16"></line></svg>;
 const IconFinance = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="1" x2="12" y2="23"></line><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>;
 const IconBox = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>;
 const IconWhatsapp = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 1 1-7.6-11.7 8.38 8.38 0 0 1 3.8.9L21 3z"></path></svg>;
