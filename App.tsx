@@ -210,7 +210,7 @@ const App: React.FC = () => {
     if (role === 'SUPERADMIN') return <SuperAdminView activeTab={superAdminTab} onTabChange={setSuperAdminTab} onImpersonate={handleImpersonate} />;
 
     switch (currentView) {
-      case View.DASHBOARD: return <Dashboard tenantId={tenantId} />;
+      case View.DASHBOARD: return <Dashboard tenantId={tenantId} onNavigate={setCurrentView} />;
       case View.AGENDAMENTOS: return <AppointmentsView tenantId={tenantId} />;
       case View.SERVICOS: return <ServicesView tenantId={tenantId} />;
       case View.PROFISSIONAIS: return <ProfessionalsView tenantId={tenantId} />;
@@ -258,26 +258,32 @@ const App: React.FC = () => {
             </>
           ) : (
             <>
+              {/* ── Grupo 1: Principal ── */}
               <NavItem active={currentView === View.DASHBOARD} onClick={() => setCurrentView(View.DASHBOARD)} icon={<IconDashboard />} label="Início" />
               <NavItem active={currentView === View.AGENDAMENTOS} onClick={() => setCurrentView(View.AGENDAMENTOS)} icon={<IconCalendar />} label="Agenda" />
+              <NavItem active={currentView === View.CLIENTES} onClick={() => setCurrentView(View.CLIENTES)} icon={<IconUserCircle />} label="Clientes" />
               <NavItem active={currentView === View.SERVICOS} onClick={() => setCurrentView(View.SERVICOS)} icon={<IconScissors />} label="Serviços" />
               <NavItem active={currentView === View.PROFISSIONAIS} onClick={() => setCurrentView(View.PROFISSIONAIS)} icon={<IconUsers />} label="Equipe" />
-              <NavItem active={currentView === View.CLIENTES} onClick={() => setCurrentView(View.CLIENTES)} icon={<IconUserCircle />} label="Clientes" />
-              <NavItem active={currentView === View.FINANCEIRO} onClick={() => setCurrentView(View.FINANCEIRO)} icon={<IconFinance />} label="Caixa" />
-              <NavItem active={currentView === View.ESTOQUE} onClick={() => setCurrentView(View.ESTOQUE)} icon={<IconBox />} label="Estoque" />
 
-              <div className="pt-6 pb-2 mt-4 border-t border-slate-100">
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-3 px-4">Conexões</p>
-                <NavItem active={currentView === View.CONEXOES} onClick={() => setCurrentView(View.CONEXOES)} icon={<IconWhatsapp />} label="Conexões" color="text-green-600" />
+              {/* ── Grupo 2: Comunicação ── */}
+              <div className="pt-4 mt-2 border-t border-slate-100 space-y-1">
                 <NavItem active={currentView === View.CONVERSAS} onClick={() => setCurrentView(View.CONVERSAS)} icon={<IconChat />} label="Conversas" />
                 <NavItem active={currentView === View.DISPARADOR} onClick={() => setCurrentView(View.DISPARADOR)} icon={<IconBroadcast />} label="Disparador" />
                 <NavItem active={currentView === View.FOLLOW_UP} onClick={() => setCurrentView(View.FOLLOW_UP)} icon={<IconClock />} label="Lembretes" />
                 <NavItem active={currentView === View.PLANOS} onClick={() => setCurrentView(View.PLANOS)} icon={<IconPlans />} label="Planos" />
               </div>
+
+              {/* ── Grupo 3: Financeiro ── */}
+              <div className="pt-4 mt-2 border-t border-slate-100 space-y-1">
+                <NavItem active={currentView === View.FINANCEIRO} onClick={() => setCurrentView(View.FINANCEIRO)} icon={<IconFinance />} label="Caixa" />
+                <NavItem active={currentView === View.ESTOQUE} onClick={() => setCurrentView(View.ESTOQUE)} icon={<IconBox />} label="Estoque" />
+              </div>
             </>
           )}
 
-          <div className="pt-4 border-t border-slate-100 mt-4 space-y-1">
+          {/* ── Grupo 4: Sistema ── */}
+          <div className="pt-4 border-t border-slate-100 mt-2 space-y-1">
+            <NavItem active={currentView === View.CONEXOES} onClick={() => setCurrentView(View.CONEXOES)} icon={<IconWhatsapp />} label="Conexões" color="text-green-600" />
             <NavItem active={currentView === View.CONFIGURACOES} onClick={() => setCurrentView(View.CONFIGURACOES)} icon={<IconSettings />} label="Ajustes" />
             <NavItem active={currentView === View.TEST_WA} onClick={() => setCurrentView(View.TEST_WA)} icon={<IconTerminal />} label="Terminal IA" />
           </div>
@@ -297,9 +303,10 @@ const App: React.FC = () => {
 
       {/* ✅ CORREÇÃO PRINCIPAL: main sem overflow-auto — o scroll fica no div interno */}
       <main className="flex-1 flex flex-col min-w-0">
-        <header className="px-10 py-6 flex items-center justify-between shrink-0 bg-white/80 backdrop-blur-md z-40 border-b border-slate-100 sticky top-0">
-          <div>
-            <h2 className="text-xl font-black text-black tracking-tight uppercase">
+        <header className="px-10 py-5 flex items-center justify-between shrink-0 bg-slate-50 z-40 border-b border-slate-200 sticky top-0">
+          <div className="flex items-center gap-3">
+            <div className="w-1 h-6 rounded-full bg-orange-500" />
+            <h2 className="text-sm font-black text-slate-700 tracking-widest uppercase">
               {role === 'SUPERADMIN'
                 ? ({ dashboard: 'Dashboard Global', clients: 'Clientes SaaS', avisos: 'Enviar Avisos', cobranca: 'Gestão de Cobrança', logs: 'Logs de Atividade', sql: 'Configurar Banco SQL' } as Record<SuperAdminTab, string>)[superAdminTab]
                 : tenantName}
@@ -315,9 +322,12 @@ const App: React.FC = () => {
             <button
               onClick={() => setDarkMode(d => !d)}
               title={darkMode ? 'Modo Claro' : 'Modo Escuro'}
-              className="w-10 h-10 rounded-2xl border-2 border-slate-100 bg-white flex items-center justify-center text-lg hover:border-orange-500 transition-all shadow-sm"
+              className="w-9 h-9 rounded-xl border border-slate-200 bg-white flex items-center justify-center hover:border-slate-400 hover:bg-slate-100 transition-all"
             >
-              {darkMode ? '☀️' : '🌙'}
+              {darkMode
+                ? <svg className="w-4 h-4 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+                : <svg className="w-4 h-4 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+              }
             </button>
           </div>
         </header>

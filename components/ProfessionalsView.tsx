@@ -205,6 +205,7 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
     setLunchDays(prev => prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d]);
 
   return (
+    <>
     <div className="space-y-10 animate-fadeIn">
       <div className="flex justify-between items-center">
         <div>
@@ -271,11 +272,12 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
           );
         })}
       </div>
+    </div>
 
       {/* ── LUNCH MODAL ─────────────────────────────────────────────── */}
       {lunchPro && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white rounded-[40px] w-full max-w-sm p-8 space-y-6 animate-scaleUp border-4 border-black my-auto">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+          <div className="bg-white rounded-[40px] w-full max-w-sm p-8 space-y-6 animate-scaleUp border-4 border-black max-h-[90vh] overflow-y-auto">
             <div className="flex items-center gap-3">
               <span className="text-2xl">🍽️</span>
               <div>
@@ -325,8 +327,8 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
 
       {/* ── VACATION MODAL ───────────────────────────────────────────── */}
       {vacPro && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white rounded-[40px] w-full max-w-sm p-8 space-y-6 animate-scaleUp border-4 border-black my-auto">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+          <div className="bg-white rounded-[40px] w-full max-w-sm p-8 space-y-6 animate-scaleUp border-4 border-black max-h-[90vh] overflow-y-auto">
             <div className="flex items-center gap-3">
               <span className="text-2xl">🌴</span>
               <div>
@@ -399,8 +401,8 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
 
       {/* ── ADD/EDIT PRO MODAL ───────────────────────────────────────── */}
       {(showModal || editingPro) && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white rounded-[40px] w-full max-w-md p-8 space-y-6 animate-scaleUp border-4 border-black my-auto">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+          <div className="bg-white rounded-[40px] w-full max-w-md p-8 space-y-6 animate-scaleUp border-4 border-black max-h-[90vh] overflow-y-auto">
             <h2 className="text-2xl font-black text-black uppercase tracking-tight italic">
               {editingPro ? 'Editar Barbeiro' : 'Novo Barbeiro'}
             </h2>
@@ -441,7 +443,7 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 };
 

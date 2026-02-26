@@ -35,6 +35,7 @@ const AppointmentsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
 
   // new booking form
   const [customerId, setCustomerId] = useState('');
+  const [customerSearch, setCustomerSearch] = useState('');
   const [profId, setProfId] = useState('');
   const [svcId, setSvcId] = useState('');
   const [manualDate, setManualDate] = useState('');
@@ -46,6 +47,9 @@ const AppointmentsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
   const [extraValue, setExtraValue] = useState<number>(0);
   const [extraNote, setExtraNote] = useState('');
   const [editStatus, setEditStatus] = useState<AppointmentStatus>(AppointmentStatus.FINISHED);
+
+  // search
+  const [searchTerm, setSearchTerm] = useState('');
 
   // break modal form
   const [brkLabel, setBrkLabel] = useState('');
@@ -104,7 +108,7 @@ const AppointmentsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
   };
 
   const openBookingModal = () => {
-    setErrorMsg(''); setCustomerId(''); setProfId(''); setSvcId('');
+    setErrorMsg(''); setCustomerId(''); setCustomerSearch(''); setProfId(''); setSvcId('');
     setManualDate(new Date().toISOString().split('T')[0]); setManualTime('');
     setShowBookingModal(true);
   };
@@ -182,7 +186,16 @@ const AppointmentsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
     return `${b.startTime}–${b.endTime} · ${when} · ${profName}`;
   };
 
-  const filteredForDisplay = appointments;
+  const filteredForDisplay = searchTerm.trim()
+    ? appointments.filter(a => {
+        const c = customers.find(cu => cu.id === a.customer_id);
+        const term = searchTerm.toLowerCase().trim();
+        return (
+          c?.name.toLowerCase().includes(term) ||
+          c?.phone.includes(term)
+        );
+      })
+    : appointments;
 
   return (
     <div className="space-y-8 animate-fadeIn">
@@ -290,7 +303,24 @@ const AppointmentsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
         </div>
 
         {/* ─── Appointments Table ────────────────── */}
-        <div className="flex-1 bg-white rounded-[40px] border-2 border-slate-100 shadow-xl shadow-slate-100/50 overflow-hidden">
+        <div className="flex-1 space-y-4">
+          {/* Search bar */}
+          <div className="bg-white rounded-[24px] border-2 border-slate-100 px-6 py-4 flex items-center gap-3 shadow-sm">
+            <svg className="w-4 h-4 text-slate-300 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <input
+              value={searchTerm}
+              onChange={e => setSearchTerm(e.target.value)}
+              placeholder="Pesquisar por nome ou telefone..."
+              className="flex-1 bg-transparent outline-none text-xs font-black uppercase tracking-widest text-black placeholder:text-slate-300"
+            />
+            {searchTerm && (
+              <button onClick={() => setSearchTerm('')} className="text-slate-300 hover:text-red-400 font-black text-xs transition-colors">✕</button>
+            )}
+          </div>
+
+          <div className="bg-white rounded-[40px] border-2 border-slate-100 shadow-xl shadow-slate-100/50 overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-left">
               <thead>
@@ -361,21 +391,93 @@ const AppointmentsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
               </tbody>
             </table>
           </div>
+          </div>
         </div>
       </div>
 
       {/* ─── New Booking Modal ─────────────────────── */}
       {showBookingModal && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] overflow-y-auto">
+          <div className="flex justify-center items-start min-h-full p-6 pt-10 pb-10">
           <div className="bg-white rounded-[40px] w-full max-w-md p-12 space-y-8 animate-scaleUp border-4 border-black">
             <h2 className="text-3xl font-black text-black tracking-tight uppercase">Novo Horário</h2>
             {errorMsg && (
               <div className="bg-red-50 border-2 border-red-200 p-4 rounded-2xl text-red-600 text-xs font-black uppercase tracking-widest animate-pulse">⚠️ {errorMsg}</div>
             )}
             <div className="space-y-4">
-              <ModalSelect label="Cliente" value={customerId} onChange={setCustomerId} placeholder="Selecionar Cliente">
-                {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </ModalSelect>
+              {/* ── Customer searchable picker ── */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-4">Cliente</label>
+                <div className="relative">
+                  <div className="flex items-center gap-2 p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus-within:border-orange-500 transition-colors">
+                    <svg className="w-3.5 h-3.5 text-slate-300 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                    </svg>
+                    <input
+                      value={customerSearch}
+                      onChange={e => { setCustomerSearch(e.target.value); setCustomerId(''); }}
+                      placeholder={customerId ? customers.find(c => c.id === customerId)?.name : 'Pesquisar por nome ou telefone...'}
+                      className="flex-1 bg-transparent outline-none text-xs font-bold text-black placeholder:text-slate-400"
+                    />
+                    {(customerSearch || customerId) && (
+                      <button onClick={() => { setCustomerSearch(''); setCustomerId(''); }} className="text-slate-300 hover:text-red-400 text-xs font-black">✕</button>
+                    )}
+                  </div>
+                  {/* Dropdown list */}
+                  {customerSearch.trim().length > 0 && (
+                    <div className="absolute top-full left-0 right-0 mt-1 bg-white border-2 border-slate-100 rounded-2xl shadow-xl z-10 max-h-52 overflow-y-auto">
+                      {[...customers]
+                        .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'))
+                        .filter(c =>
+                          c.name.toLowerCase().includes(customerSearch.toLowerCase()) ||
+                          c.phone.includes(customerSearch)
+                        )
+                        .slice(0, 50)
+                        .map(c => (
+                          <button
+                            key={c.id}
+                            onClick={() => { setCustomerId(c.id); setCustomerSearch(''); }}
+                            className="w-full text-left px-4 py-3 hover:bg-orange-50 transition-colors border-b border-slate-50 last:border-0"
+                          >
+                            <span className="text-xs font-black text-black uppercase">{c.name}</span>
+                            <span className="text-[10px] text-slate-400 font-bold ml-2">{c.phone}</span>
+                          </button>
+                        ))
+                      }
+                      {[...customers].filter(c =>
+                        c.name.toLowerCase().includes(customerSearch.toLowerCase()) ||
+                        c.phone.includes(customerSearch)
+                      ).length === 0 && (
+                        <p className="text-center text-[10px] font-black text-slate-300 uppercase py-4">Nenhum cliente encontrado</p>
+                      )}
+                    </div>
+                  )}
+                  {/* Show sorted list when empty search but no selection */}
+                  {customerSearch.trim().length === 0 && !customerId && (
+                    <div className="absolute top-full left-0 right-0 mt-1 bg-white border-2 border-slate-100 rounded-2xl shadow-xl z-10 max-h-52 overflow-y-auto">
+                      {[...customers]
+                        .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'))
+                        .map(c => (
+                          <button
+                            key={c.id}
+                            onClick={() => { setCustomerId(c.id); setCustomerSearch(''); }}
+                            className="w-full text-left px-4 py-3 hover:bg-orange-50 transition-colors border-b border-slate-50 last:border-0"
+                          >
+                            <span className="text-xs font-black text-black uppercase">{c.name}</span>
+                            <span className="text-[10px] text-slate-400 font-bold ml-2">{c.phone}</span>
+                          </button>
+                        ))
+                      }
+                    </div>
+                  )}
+                </div>
+                {customerId && (
+                  <p className="text-[10px] font-black text-orange-500 ml-4 mt-1">
+                    ✓ {customers.find(c => c.id === customerId)?.name}
+                  </p>
+                )}
+              </div>
+
               <ModalSelect label="Profissional" value={profId} onChange={setProfId} placeholder="Selecionar Profissional">
                 {professionals.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
               </ModalSelect>
@@ -398,12 +500,14 @@ const AppointmentsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
               <button onClick={handleCreateBooking} className="flex-1 py-4 bg-orange-500 text-white rounded-2xl font-black uppercase text-xs shadow-xl shadow-orange-100 hover:bg-black transition-all">Agendar</button>
             </div>
           </div>
+          </div>
         </div>
       )}
 
       {/* ─── Finish / Manage Modal ────────────────── */}
       {showFinishModal && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] overflow-y-auto">
+          <div className="flex justify-center items-start min-h-full p-6 pt-10 pb-10">
           <div className="bg-white rounded-[40px] w-full max-w-md p-12 space-y-8 animate-scaleUp border-4 border-orange-500">
             <div className="flex items-center justify-between">
               <h2 className="text-2xl font-black text-black uppercase">Gerenciar Agendamento</h2>
@@ -491,12 +595,14 @@ const AppointmentsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
               <button onClick={handleFinish} className="flex-1 py-4 bg-orange-500 text-white rounded-2xl font-black uppercase text-xs">Gravar Alterações</button>
             </div>
           </div>
+          </div>
         </div>
       )}
 
       {/* ─── Break Period Modal ───────────────────── */}
       {showBreakModal && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] overflow-y-auto">
+          <div className="flex justify-center items-start min-h-full p-6 pt-10 pb-10">
           <div className="bg-white rounded-[40px] w-full max-w-md p-10 space-y-6 animate-scaleUp border-4 border-black">
             <h2 className="text-2xl font-black text-black uppercase tracking-tight">Gerar Intervalo</h2>
 
@@ -558,6 +664,7 @@ const AppointmentsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
               <button onClick={() => setShowBreakModal(false)} className="flex-1 py-4 font-black text-slate-400 uppercase text-xs">Cancelar</button>
               <button onClick={handleCreateBreak} className="flex-1 py-4 bg-black text-white rounded-2xl font-black uppercase text-xs hover:bg-orange-500 transition-all">Salvar Intervalo</button>
             </div>
+          </div>
           </div>
         </div>
       )}

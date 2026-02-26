@@ -12,7 +12,7 @@ const fmtBRL = (n: number) =>
 
 const DONUT_COLORS = ['#0f172a', '#475569', '#94a3b8', '#cbd5e1', '#e2e8f0'];
 
-const Dashboard: React.FC<{ tenantId: string }> = ({ tenantId }) => {
+const Dashboard: React.FC<{ tenantId: string; onNavigate?: (view: string) => void }> = ({ tenantId, onNavigate }) => {
   const [loading, setLoading] = useState(true);
   const [professionals, setProfessionals] = useState<Professional[]>([]);
   const [appointments, setAppointments] = useState<any[]>([]);
@@ -183,6 +183,7 @@ const Dashboard: React.FC<{ tenantId: string }> = ({ tenantId }) => {
           value={`R$ ${fmtBRL(curRevenue)}`}
           trend={revTrend}
           sub="vs. período anterior"
+          onClick={onNavigate ? () => onNavigate('FINANCEIRO') : undefined}
         />
         <StatCard
           icon={<IcoCalendar />}
@@ -190,6 +191,7 @@ const Dashboard: React.FC<{ tenantId: string }> = ({ tenantId }) => {
           value={String(curAppts.length)}
           trend={apptTrend}
           sub="este período"
+          onClick={onNavigate ? () => onNavigate('AGENDAMENTOS') : undefined}
         />
         <StatCard
           icon={<IcoUsers />}
@@ -198,6 +200,7 @@ const Dashboard: React.FC<{ tenantId: string }> = ({ tenantId }) => {
           trendLabel={`+${professionals.length}`}
           trendPos
           sub="ativos"
+          onClick={onNavigate ? () => onNavigate('PROFISSIONAIS') : undefined}
         />
         <StatCard
           icon={<IcoScissors />}
@@ -205,6 +208,7 @@ const Dashboard: React.FC<{ tenantId: string }> = ({ tenantId }) => {
           value={String(services.length)}
           trendLabel={String(services.length)}
           sub="catálogo"
+          onClick={onNavigate ? () => onNavigate('SERVICOS') : undefined}
         />
       </div>
 
@@ -409,7 +413,7 @@ const Dashboard: React.FC<{ tenantId: string }> = ({ tenantId }) => {
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-const StatCard = ({ icon, title, value, trend, trendLabel, trendPos, sub }: {
+const StatCard = ({ icon, title, value, trend, trendLabel, trendPos, sub, onClick }: {
   icon: React.ReactNode;
   title: string;
   value: string;
@@ -417,20 +421,27 @@ const StatCard = ({ icon, title, value, trend, trendLabel, trendPos, sub }: {
   trendLabel?: string;
   trendPos?: boolean;
   sub?: string;
+  onClick?: () => void;
 }) => {
   const showTrend = trend !== undefined;
   const isPos = showTrend ? trend >= 0 : !!trendPos;
   const label = trendLabel ?? `${isPos ? '+' : ''}${trend?.toFixed(1)}%`;
 
   return (
-    <div className="bg-white rounded-2xl border border-slate-100 p-5 hover:border-slate-200 transition-all">
+    <div
+      className={`bg-white rounded-2xl border p-5 transition-all ${onClick ? 'cursor-pointer border-slate-100 hover:border-orange-300 hover:shadow-md hover:-translate-y-0.5' : 'border-slate-100 hover:border-slate-200'}`}
+      onClick={onClick}
+    >
       <div className="flex items-start justify-between mb-4">
         <div className="w-9 h-9 bg-slate-50 rounded-xl flex items-center justify-center text-slate-500">
           {icon}
         </div>
-        <span className={`text-[10px] font-bold ${isPos ? 'text-green-500' : 'text-red-400'}`}>
-          {isPos ? '↑' : '↓'} {label}
-        </span>
+        <div className="flex items-center gap-1">
+          <span className={`text-[10px] font-bold ${isPos ? 'text-green-500' : 'text-red-400'}`}>
+            {isPos ? '↑' : '↓'} {label}
+          </span>
+          {onClick && <span className="text-[10px] text-slate-300">→</span>}
+        </div>
       </div>
       <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1">{title}</p>
       <p className="text-2xl font-black text-black leading-none">{value}</p>

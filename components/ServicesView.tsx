@@ -101,7 +101,8 @@ const ServicesView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
       </div>
 
       {modal.show && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] overflow-y-auto">
+          <div className="flex justify-center items-start min-h-full p-6 pt-10 pb-10">
           <div className="bg-white rounded-[40px] w-full max-w-md p-12 space-y-8 animate-scaleUp border-4 border-black">
             <h2 className="text-2xl font-black text-black uppercase tracking-tight italic">{modal.data?.id ? 'Editar Serviço' : 'Novo Serviço'}</h2>
             <div className="space-y-6">
@@ -124,6 +125,7 @@ const ServicesView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
               <button onClick={()=>setModal({show: false, data: null})} className="flex-1 py-4 font-black text-slate-400 uppercase text-xs tracking-widest">Voltar</button>
               <button onClick={handleSave} className="flex-1 py-4 bg-black text-white rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-orange-500 transition-all shadow-xl">Confirmar</button>
             </div>
+          </div>
           </div>
         </div>
       )}
