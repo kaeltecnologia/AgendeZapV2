@@ -230,8 +230,9 @@ const CustomersView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
 
       {/* ─── Edit Modal ──────────────────────────── */}
       {editingCustomer && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-          <div className="bg-white rounded-[40px] w-full max-w-md p-12 space-y-8 animate-scaleUp max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] overflow-y-auto">
+          <div className="flex items-center justify-center min-h-full p-4">
+            <div className="bg-white rounded-[40px] w-full max-w-md p-12 space-y-8 animate-scaleUp">
             <h2 className="text-3xl font-black text-black uppercase tracking-tight">Editar Cliente</h2>
 
             <div className="space-y-5">
@@ -338,6 +339,7 @@ const CustomersView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
               <button onClick={handleSaveEdit} disabled={saving} className="flex-1 py-4 bg-black text-white rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-orange-500 transition-all disabled:opacity-50">
                 {saving ? 'Gravando...' : 'Salvar'}
               </button>
+            </div>
             </div>
           </div>
         </div>

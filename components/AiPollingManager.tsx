@@ -4,6 +4,7 @@ import { db } from '../services/mockDb';
 import { supabase } from '../services/supabase';
 import { handleMessage } from '../services/agentService';
 import { handleProfessionalMessage } from '../services/professionalAgentService';
+import { runFollowUp } from '../services/followUpService';
 
 const AiPollingManager: React.FC<{ tenantId: string }> = ({ tenantId }) => {
   const processedIds = useRef<Set<string>>(new Set());
@@ -109,9 +110,30 @@ const AiPollingManager: React.FC<{ tenantId: string }> = ({ tenantId }) => {
     }
   };
 
+  // ── AI message polling (every 4 s) ─────────────────────────────────
   useEffect(() => {
     if (!tenantId) return;
     const interval = setInterval(poll, 4000);
+    return () => clearInterval(interval);
+  }, [tenantId]);
+
+  // ── Follow-up scheduler (every 60 s) ───────────────────────────────
+  useEffect(() => {
+    if (!tenantId) return;
+
+    const tick = async () => {
+      try {
+        const { data: tenants } = await supabase.from('tenants').select('*');
+        const tenant = (tenants || []).find((t: any) => t.id === tenantId);
+        if (tenant) await runFollowUp(tenant);
+      } catch (e: any) {
+        console.error('[FollowUp] Erro no scheduler:', e.message);
+      }
+    };
+
+    // Run once immediately on mount, then every 60 s
+    tick();
+    const interval = setInterval(tick, 60000);
     return () => clearInterval(interval);
   }, [tenantId]);
 

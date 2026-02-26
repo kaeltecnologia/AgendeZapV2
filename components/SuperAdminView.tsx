@@ -1,491 +1,838 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { db } from '../services/mockDb';
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
+import { BarChart, Bar, PieChart, Pie, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { TenantStatus, Tenant } from '../types';
 import { evolutionService } from '../services/evolutionService';
 
-const SuperAdminView: React.FC = () => {
-  const [activeSubTab, setActiveSubTab] = useState<'stats' | 'tenants' | 'sql'>('stats');
-  const [stats, setStats] = useState<any>(null);
+// ── Types ──────────────────────────────────────────────────────────────────────
+
+interface GlobalStats {
+  totalTenants: number;
+  activeTenants: number;
+  mrr: number;
+  globalVolume: number;
+  totalAppts: number;
+  newThisMonth: number;
+  totalCustomers: number;
+  byStatus: Record<string, number>;
+}
+
+interface BillingReminder {
+  daysOffset: number; // 3=3 days before, 0=on due date
+  label: string;
+  message: string;
+  enabled: boolean;
+}
+
+interface AdminLog {
+  ts: string;
+  action: string;
+  detail: string;
+}
+
+type Tab = 'dashboard' | 'clients' | 'avisos' | 'cobranca' | 'logs' | 'sql';
+
+const STATUS_COLORS: Record<string, string> = {
+  [TenantStatus.ACTIVE]: '#22c55e',
+  [TenantStatus.PAUSED]: '#f59e0b',
+  [TenantStatus.CANCELLED]: '#ef4444',
+  [TenantStatus.BLOCKED]: '#64748b',
+  [TenantStatus.PENDING_PAYMENT]: '#f97316',
+};
+
+const STATUS_LABELS: Record<string, string> = {
+  [TenantStatus.ACTIVE]: 'Ativa',
+  [TenantStatus.PAUSED]: 'Pausada',
+  [TenantStatus.CANCELLED]: 'Cancelada',
+  [TenantStatus.BLOCKED]: 'Bloqueada',
+  [TenantStatus.PENDING_PAYMENT]: 'Pag. Pendente',
+};
+
+const DEFAULT_BILLING_REMINDERS: BillingReminder[] = [
+  { daysOffset: 3, label: 'Antepenúltimo dia', message: 'Olá {nome}! 👋 Sua mensalidade AgendeZap de R$ {valor} vence em *3 dias* (dia {dia}). Renove para manter seu acesso ativo! 🚀', enabled: false },
+  { daysOffset: 2, label: 'Penúltimo dia', message: 'Olá {nome}! ⏰ Sua mensalidade AgendeZap de R$ {valor} vence em *2 dias* (dia {dia}). Não deixe seu sistema parar!', enabled: false },
+  { daysOffset: 1, label: 'Último dia', message: 'Atenção {nome}! ⚠️ Amanhã é o último dia para pagar sua mensalidade AgendeZap (R$ {valor}). Renove agora e continue atendendo seus clientes!', enabled: false },
+  { daysOffset: 0, label: 'Dia do vencimento', message: 'Olá {nome}! 🔴 Hoje vence sua mensalidade AgendeZap (R$ {valor}). Realize o pagamento para evitar a suspensão do serviço. Obrigado!', enabled: false },
+];
+
+function loadAdminLogs(): AdminLog[] {
+  try { return JSON.parse(localStorage.getItem('agz_admin_logs') || '[]'); } catch { return []; }
+}
+function saveAdminLog(action: string, detail: string) {
+  const logs = loadAdminLogs();
+  logs.unshift({ ts: new Date().toISOString(), action, detail });
+  localStorage.setItem('agz_admin_logs', JSON.stringify(logs.slice(0, 100)));
+}
+function loadBillingConfig(): BillingReminder[] {
+  try {
+    const saved = JSON.parse(localStorage.getItem('agz_billing_config') || 'null');
+    return saved || DEFAULT_BILLING_REMINDERS;
+  } catch { return DEFAULT_BILLING_REMINDERS; }
+}
+function saveBillingConfig(config: BillingReminder[]) {
+  localStorage.setItem('agz_billing_config', JSON.stringify(config));
+}
+function loadBillingSent(): Record<string, string> {
+  try { return JSON.parse(localStorage.getItem('agz_billing_sent') || '{}'); } catch { return {}; }
+}
+function saveBillingSent(sent: Record<string, string>) {
+  localStorage.setItem('agz_billing_sent', JSON.stringify(sent));
+}
+
+// ── Main Component ─────────────────────────────────────────────────────────────
+
+interface SuperAdminViewProps {
+  activeTab: Tab;
+  onTabChange: (tab: Tab) => void;
+  onImpersonate: (id: string, name: string, slug: string) => void;
+}
+
+const SuperAdminView: React.FC<SuperAdminViewProps> = ({ activeTab: tab, onTabChange: setTab, onImpersonate }) => {
+  const [stats, setStats] = useState<GlobalStats | null>(null);
   const [tenants, setTenants] = useState<Tenant[]>([]);
-  const [showModal, setShowModal] = useState(false);
-  const [successData, setSuccessData] = useState<{ email: string; pass: string; slug: string } | null>(null);
-  const [creatingInstance, setCreatingInstance] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [monthlyFee, setMonthlyFee] = useState('0');
+  // New tenant modal
+  const [showNew, setShowNew] = useState(false);
+  const [successData, setSuccessData] = useState<{ email: string; pass: string; slug: string } | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newEmail, setNewEmail] = useState('');
+  const [newPass, setNewPass] = useState('');
+  const [newFee, setNewFee] = useState('0');
+  const [newPhone, setNewPhone] = useState('');
+  const [newDueDay, setNewDueDay] = useState('');
+
+  // Edit modal
   const [editingTenant, setEditingTenant] = useState<Tenant | null>(null);
+  const [saving, setSaving] = useState(false);
 
-  const COLORS = ['#f97316', '#000000', '#94a3b8'];
+  // Delete confirm
+  const [deleteId, setDeleteId] = useState<string | null>(null);
 
-  const load = async () => {
+  // Client list filters
+  const [clientSearch, setClientSearch] = useState('');
+  const [clientStatusFilter, setClientStatusFilter] = useState('');
+
+  // Announcements
+  const [announceTo, setAnnounceTo] = useState<'all' | 'active'>('active');
+  const [announceMsg, setAnnounceMsg] = useState('');
+  const [sendingAnnounce, setSendingAnnounce] = useState(false);
+  const [announceResult, setAnnounceResult] = useState<{ ok: number; fail: number } | null>(null);
+
+  // Billing
+  const [billingReminders, setBillingReminders] = useState<BillingReminder[]>(loadBillingConfig);
+  const [runningBilling, setRunningBilling] = useState(false);
+  const [billingResult, setBillingResult] = useState<string | null>(null);
+
+  // Logs
+  const [logs, setLogs] = useState<AdminLog[]>(loadAdminLogs);
+
+  const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [s, t] = await Promise.all([
-        db.getGlobalStats(),
-        db.getAllTenants()
-      ]);
-      setStats(s);
+      const [s, t] = await Promise.all([db.getGlobalStats(), db.getAllTenants()]);
+      setStats(s as GlobalStats);
       setTenants([...t].reverse());
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    load();
+    } catch (e) { console.error(e); }
+    finally { setLoading(false); }
   }, []);
 
-  const handleCreateCompany = async () => {
-    if (!name.trim()) return;
-    setCreatingInstance(true);
-    
-    try {
-      const slug = name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, '-').replace(/[^\w-]/g, '');
-      
-      const finalEmail = email.trim() || `${slug}@agendezap.com`;
-      const finalPass = password.trim() || `Zap@${Math.floor(1000 + Math.random() * 9000)}`;
+  useEffect(() => { load(); }, [load]);
 
-      const newTenant = await db.addTenant({
-        name: name, 
-        slug: slug, 
-        email: finalEmail,
-        password: finalPass,
-        plan: 'BASIC', 
-        status: TenantStatus.ACTIVE, 
-        monthlyFee: parseFloat(monthlyFee) || 0
-      });
-      
+  // ── Create tenant ────────────────────────────────────────────────────────────
+
+  const handleCreate = async () => {
+    if (!newName.trim()) return;
+    setCreating(true);
+    try {
+      const slug = newName.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, '-').replace(/[^\w-]/g, '');
+      const email = newEmail.trim() || `${slug}@agendezap.com`;
+      const pass = newPass.trim() || `Zap@${Math.floor(1000 + Math.random() * 9000)}`;
+      const fee = parseFloat(newFee) || 0;
+      const dueDay = parseInt(newDueDay) || undefined;
+      const phone = newPhone.trim() || undefined;
+
+      const t = await db.addTenant({ name: newName, slug, email, password: pass, plan: 'BASIC', status: TenantStatus.ACTIVE, monthlyFee: fee });
+      if (phone || dueDay) await db.updateTenant(t.id, { phone, due_day: dueDay });
+
       try {
-        // Tenta criar instância no Evolution, mas não deixa travar o processo principal
         await Promise.race([
           evolutionService.createAndFetchQr(slug),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout Evolution')), 15000))
+          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 15000))
         ]);
-      } catch (e) {
-        console.error("Falha ao criar instância Evolution (ou timeout):", e);
-      }
+      } catch { /* Evolution timeout is non-fatal */ }
 
-      setTenants([newTenant, ...tenants]);
-      setSuccessData({ 
-        email: finalEmail, 
-        pass: finalPass,
-        slug: slug
-      });
-      
-      // Limpa os campos
-      setName('');
-      setEmail('');
-      setPassword('');
-      setMonthlyFee('0');
-      
+      setSuccessData({ email, pass, slug });
+      setNewName(''); setNewEmail(''); setNewPass(''); setNewFee('0'); setNewPhone(''); setNewDueDay('');
+      saveAdminLog('TENANT_CREATED', `${newName} (${email})`);
+      setLogs(loadAdminLogs());
       load();
-    } catch (e) {
-      console.error("Erro ao criar unidade:", e);
-      alert("Erro ao criar unidade. Verifique o console.");
-    } finally {
-      setCreatingInstance(false);
-    }
+    } catch (e: any) {
+      alert('Erro ao criar unidade: ' + (e.message || 'Verifique o console'));
+    } finally { setCreating(false); }
   };
 
-  const handleUpdateTenant = async () => {
+  // ── Update tenant ────────────────────────────────────────────────────────────
+
+  const handleUpdate = async () => {
     if (!editingTenant) return;
-    setCreatingInstance(true);
+    setSaving(true);
     try {
       await db.updateTenant(editingTenant.id, {
         status: editingTenant.status,
         monthlyFee: editingTenant.monthlyFee,
         email: editingTenant.email,
-        password: editingTenant.password
+        password: editingTenant.password,
+        phone: editingTenant.phone,
+        due_day: editingTenant.due_day,
       });
+      saveAdminLog('TENANT_UPDATED', `${editingTenant.name}`);
+      setLogs(loadAdminLogs());
       setEditingTenant(null);
       load();
-    } catch (e) {
-      console.error(e);
-      alert("Erro ao atualizar barbearia");
-    } finally {
-      setCreatingInstance(false);
-    }
+    } catch (e) { alert('Erro ao atualizar'); }
+    finally { setSaving(false); }
   };
 
-  const sqlScript = `
--- SCRIPT DE REPARO E ATUALIZAÇÃO AGENDEZAP --
+  // ── Delete tenant ────────────────────────────────────────────────────────────
 
--- Este script garante que todas as colunas necessárias existam na tabela 'tenants'
-DO $$ 
-BEGIN 
-    -- Coluna email
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tenants' AND column_name='email') THEN
-        ALTER TABLE tenants ADD COLUMN email TEXT;
-    END IF;
-    
-    -- Coluna password
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tenants' AND column_name='password') THEN
-        ALTER TABLE tenants ADD COLUMN password TEXT;
-    END IF;
+  const handleDelete = async () => {
+    if (!deleteId) return;
+    const t = tenants.find(x => x.id === deleteId);
+    try {
+      await db.deleteTenant(deleteId);
+      saveAdminLog('TENANT_DELETED', t?.name || deleteId);
+      setLogs(loadAdminLogs());
+      setDeleteId(null);
+      load();
+    } catch (e) { alert('Erro ao excluir'); }
+  };
 
-    -- Coluna plan
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tenants' AND column_name='plan') THEN
-        ALTER TABLE tenants ADD COLUMN plan TEXT DEFAULT 'BASIC';
-    END IF;
+  // ── Announcements ────────────────────────────────────────────────────────────
 
-    -- Coluna status
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tenants' AND column_name='status') THEN
-        ALTER TABLE tenants ADD COLUMN status TEXT DEFAULT 'ATIVA';
-    END IF;
+  const handleAnnounce = async () => {
+    if (!announceMsg.trim()) return;
+    setSendingAnnounce(true);
+    setAnnounceResult(null);
+    let ok = 0, fail = 0;
+    const targets = announceTo === 'active' ? tenants.filter(t => t.status === TenantStatus.ACTIVE) : tenants;
+    for (const t of targets) {
+      if (!t.phone || !t.evolution_instance) { fail++; continue; }
+      try {
+        await evolutionService.sendMessage(t.evolution_instance, t.phone, announceMsg);
+        ok++;
+      } catch { fail++; }
+    }
+    setAnnounceResult({ ok, fail });
+    saveAdminLog('ANNOUNCEMENT_SENT', `${ok} enviados, ${fail} falhas`);
+    setLogs(loadAdminLogs());
+    setSendingAnnounce(false);
+  };
 
-    -- Coluna mensalidade (monthlyFee no código)
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tenants' AND column_name='mensalidade') THEN
-        ALTER TABLE tenants ADD COLUMN mensalidade NUMERIC DEFAULT 0;
-    END IF;
+  // ── Billing reminders ────────────────────────────────────────────────────────
 
-    -- Coluna nome (name no código)
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tenants' AND column_name='nome') THEN
-        ALTER TABLE tenants ADD COLUMN nome TEXT;
-    END IF;
+  const handleRunBilling = async () => {
+    setRunningBilling(true);
+    setBillingResult(null);
+    const sent = loadBillingSent();
+    const now = new Date();
+    const month = now.toISOString().slice(0, 7);
+    let ok = 0, skip = 0;
 
-    -- REMOVER RESTRIÇÃO DE NOT NULL DA COLUNA evolution_instance (se existir)
-    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tenants' AND column_name='evolution_instance') THEN
-        ALTER TABLE tenants ALTER COLUMN evolution_instance DROP NOT NULL;
-    END IF;
+    const enabledReminders = billingReminders.filter(r => r.enabled);
+    if (!enabledReminders.length) {
+      setBillingResult('Nenhum lembrete habilitado.');
+      setRunningBilling(false);
+      return;
+    }
 
-    -- REPARO TABELA PROFESSIONALS
-    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='professionals') THEN
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='professionals' AND column_name='phone') THEN
-            ALTER TABLE professionals ADD COLUMN phone TEXT;
-        END IF;
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='professionals' AND column_name='nome') THEN
-            ALTER TABLE professionals ADD COLUMN nome TEXT;
-        END IF;
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='professionals' AND column_name='especialidade') THEN
-            ALTER TABLE professionals ADD COLUMN especialidade TEXT;
-        END IF;
-    END IF;
+    for (const t of tenants) {
+      if (!t.due_day || !t.phone || !t.evolution_instance) continue;
+      if (t.status !== TenantStatus.ACTIVE && t.status !== TenantStatus.PENDING_PAYMENT) continue;
 
-    -- REPARO TABELA SERVICES
-    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='services') THEN
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='services' AND column_name='preco') THEN
-            ALTER TABLE services ADD COLUMN preco NUMERIC;
-        END IF;
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='services' AND column_name='duracao_minutos') THEN
-            ALTER TABLE services ADD COLUMN duracao_minutos INTEGER;
-        END IF;
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='services' AND column_name='nome') THEN
-            ALTER TABLE services ADD COLUMN nome TEXT;
-        END IF;
-    END IF;
+      const dueDate = new Date(now.getFullYear(), now.getMonth(), t.due_day);
+      if (dueDate < now && dueDate.getMonth() === now.getMonth()) {
+        // Due date already passed this month — skip
+        continue;
+      }
+      const daysUntil = Math.round((dueDate.getTime() - now.setHours(0, 0, 0, 0)) / 86400000);
 
-    -- REPARO TABELA CUSTOMERS
-    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='customers') THEN
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='customers' AND column_name='telefone') THEN
-            ALTER TABLE customers ADD COLUMN telefone TEXT;
-        END IF;
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='customers' AND column_name='nome') THEN
-            ALTER TABLE customers ADD COLUMN nome TEXT;
-        END IF;
-    END IF;
+      for (const reminder of enabledReminders) {
+        if (daysUntil !== reminder.daysOffset) continue;
+        const key = `${t.id}::${month}::${reminder.daysOffset}`;
+        if (sent[key]) { skip++; continue; }
 
-    -- REPARO TABELA APPOINTMENTS (AGENDAMENTOS)
-    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='appointments') THEN
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='appointments' AND column_name='inicio') THEN
-            ALTER TABLE appointments ADD COLUMN inicio TIMESTAMPTZ;
-        END IF;
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='appointments' AND column_name='fim') THEN
-            ALTER TABLE appointments ADD COLUMN fim TIMESTAMPTZ;
-        END IF;
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='appointments' AND column_name='payment_method') THEN
-            ALTER TABLE appointments ADD COLUMN payment_method TEXT;
-        END IF;
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='appointments' AND column_name='amount_paid') THEN
-            ALTER TABLE appointments ADD COLUMN amount_paid NUMERIC DEFAULT 0;
-        END IF;
-    END IF;
+        const msg = reminder.message
+          .replace(/\{nome\}/gi, t.name)
+          .replace(/\{valor\}/gi, `R$ ${t.monthlyFee.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`)
+          .replace(/\{dia\}/gi, String(t.due_day));
 
-    -- REPARO TABELA EXPENSES (CAIXA/DESPESAS)
-    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='expenses') THEN
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='expenses' AND column_name='category') THEN
-            ALTER TABLE expenses ADD COLUMN category TEXT;
-        END IF;
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='expenses' AND column_name='date') THEN
-            ALTER TABLE expenses ADD COLUMN date TIMESTAMPTZ DEFAULT now();
-        END IF;
-    END IF;
+        try {
+          await evolutionService.sendMessage(t.evolution_instance, t.phone, msg);
+          sent[key] = new Date().toISOString();
+          ok++;
+        } catch { skip++; }
+      }
+    }
+    saveBillingSent(sent);
+    saveAdminLog('BILLING_RUN', `${ok} enviados, ${skip} ignorados`);
+    setLogs(loadAdminLogs());
+    setBillingResult(`✅ ${ok} lembretes enviados · ${skip} ignorados (já enviados)`);
+    setRunningBilling(false);
+  };
+
+  // ── Derived ─────────────────────────────────────────────────────────────────
+
+  const filteredTenants = tenants.filter(t => {
+    if (clientSearch && !t.name.toLowerCase().includes(clientSearch.toLowerCase()) && !t.email?.toLowerCase().includes(clientSearch.toLowerCase())) return false;
+    if (clientStatusFilter && t.status !== clientStatusFilter) return false;
+    return true;
+  });
+
+  // ── Charts data ──────────────────────────────────────────────────────────────
+
+  const statusPieData = stats
+    ? Object.entries(stats.byStatus || {})
+        .filter(([, v]) => v > 0)
+        .map(([k, v]) => ({ name: STATUS_LABELS[k] || k, value: v, color: STATUS_COLORS[k] || '#94a3b8' }))
+    : [];
+
+  const topTenantsByFee = [...tenants]
+    .sort((a, b) => b.monthlyFee - a.monthlyFee)
+    .slice(0, 6)
+    .map(t => ({ name: t.name.split(' ')[0], fee: t.monthlyFee }));
+
+  // ── SQL script ───────────────────────────────────────────────────────────────
+
+  const sqlScript = `-- SCRIPT DE REPARO AGENDEZAP --
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tenants' AND column_name='email') THEN ALTER TABLE tenants ADD COLUMN email TEXT; END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tenants' AND column_name='password') THEN ALTER TABLE tenants ADD COLUMN password TEXT; END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tenants' AND column_name='plan') THEN ALTER TABLE tenants ADD COLUMN plan TEXT DEFAULT 'BASIC'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tenants' AND column_name='status') THEN ALTER TABLE tenants ADD COLUMN status TEXT DEFAULT 'ATIVA'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tenants' AND column_name='mensalidade') THEN ALTER TABLE tenants ADD COLUMN mensalidade NUMERIC DEFAULT 0; END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tenants' AND column_name='nome') THEN ALTER TABLE tenants ADD COLUMN nome TEXT; END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tenants' AND column_name='phone') THEN ALTER TABLE tenants ADD COLUMN phone TEXT; END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tenants' AND column_name='due_day') THEN ALTER TABLE tenants ADD COLUMN due_day INTEGER; END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tenants' AND column_name='evolution_instance') THEN ALTER TABLE tenants ALTER COLUMN evolution_instance DROP NOT NULL; END IF;
 END $$;
 
--- Recriar as outras tabelas se não existirem
-CREATE TABLE IF NOT EXISTS professionals (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  tenant_id UUID REFERENCES tenants(id),
-  nome TEXT,
-  phone TEXT NOT NULL,
-  especialidade TEXT,
-  ativo BOOLEAN DEFAULT true
-);
+CREATE TABLE IF NOT EXISTS professionals (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id UUID REFERENCES tenants(id), nome TEXT, phone TEXT NOT NULL, especialidade TEXT, ativo BOOLEAN DEFAULT true);
+CREATE TABLE IF NOT EXISTS services (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id UUID REFERENCES tenants(id), nome TEXT, preco NUMERIC, duracao_minutos INTEGER, ativo BOOLEAN DEFAULT true);
+CREATE TABLE IF NOT EXISTS customers (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id UUID REFERENCES tenants(id), nome TEXT, telefone TEXT NOT NULL, ativo BOOLEAN DEFAULT true, plan_id UUID, follow_up_mode TEXT);
+CREATE TABLE IF NOT EXISTS tenant_settings (tenant_id UUID PRIMARY KEY REFERENCES tenants(id), follow_up JSONB, operating_hours JSONB, ai_active BOOLEAN DEFAULT false, theme_color TEXT DEFAULT '#f97316');
+CREATE TABLE IF NOT EXISTS appointments (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id UUID REFERENCES tenants(id), customer_id UUID REFERENCES customers(id), professional_id UUID REFERENCES professionals(id), service_id UUID REFERENCES services(id), inicio TIMESTAMPTZ, fim TIMESTAMPTZ, status TEXT DEFAULT 'PENDING', origem TEXT DEFAULT 'WEB', payment_method TEXT, amount_paid NUMERIC, extra_note TEXT, extra_value NUMERIC);
+CREATE TABLE IF NOT EXISTS expenses (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id UUID REFERENCES tenants(id), description TEXT, amount NUMERIC, category TEXT, professional_id UUID REFERENCES professionals(id), date TIMESTAMPTZ DEFAULT now());`.trim();
 
-CREATE TABLE IF NOT EXISTS services (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  tenant_id UUID REFERENCES tenants(id),
-  nome TEXT,
-  preco NUMERIC,
-  duracao_minutos INTEGER,
-  ativo BOOLEAN DEFAULT true
-);
-
-CREATE TABLE IF NOT EXISTS customers (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  tenant_id UUID REFERENCES tenants(id),
-  nome TEXT,
-  telefone TEXT NOT NULL,
-  ativo BOOLEAN DEFAULT true
-);
-
-CREATE TABLE IF NOT EXISTS tenant_settings (
-  tenant_id UUID PRIMARY KEY REFERENCES tenants(id),
-  follow_up JSONB,
-  operating_hours JSONB,
-  ai_active BOOLEAN DEFAULT false,
-  theme_color TEXT DEFAULT '#f97316'
-);
-
-CREATE TABLE IF NOT EXISTS appointments (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  tenant_id UUID REFERENCES tenants(id),
-  customer_id UUID REFERENCES customers(id),
-  professional_id UUID REFERENCES professionals(id),
-  service_id UUID REFERENCES services(id),
-  inicio TIMESTAMPTZ,
-  fim TIMESTAMPTZ,
-  status TEXT DEFAULT 'PENDING',
-  origem TEXT DEFAULT 'WEB',
-  payment_method TEXT,
-  amount_paid NUMERIC,
-  extra_note TEXT,
-  extra_value NUMERIC
-);
-
-CREATE TABLE IF NOT EXISTS expenses (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  tenant_id UUID REFERENCES tenants(id),
-  description TEXT,
-  amount NUMERIC,
-  category TEXT,
-  professional_id UUID REFERENCES professionals(id),
-  date TIMESTAMPTZ DEFAULT now()
-);
-`.trim();
-
-  if (loading || !stats) return <div className="p-20 text-center font-black animate-pulse">SINCRONIZANDO PAINEL MESTRE...</div>;
+  if (loading || !stats) {
+    return (
+      <div className="flex items-center justify-center p-20 gap-4">
+        <div className="w-8 h-8 border-4 border-slate-100 border-t-orange-500 rounded-full animate-spin" />
+        <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Sincronizando Painel Mestre...</p>
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-12 animate-fadeIn">
-      <div className="flex justify-between items-center">
+    <div className="space-y-8 animate-fadeIn">
+      {/* ── Header ── */}
+      <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-4xl font-black text-black uppercase tracking-tight italic">SuperAdmin</h1>
-          <p className="text-xs font-bold text-slate-400 uppercase tracking-[0.2em] mt-2">Visão do Ecossistema</p>
+          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Visão global do AgendeZap SaaS</p>
         </div>
-        <button onClick={() => setShowModal(true)} className="bg-orange-500 text-white px-10 py-4 rounded-2xl font-black text-xs uppercase tracking-[0.2em] shadow-xl shadow-orange-100 hover:scale-105 transition-all">
-          + Nova Barbearia
-        </button>
+        {tab !== 'sql' && tab !== 'logs' && (
+          <button
+            onClick={() => { setShowNew(true); setSuccessData(null); }}
+            className="bg-orange-500 text-white px-8 py-3 rounded-2xl font-black text-xs uppercase tracking-widest shadow-xl shadow-orange-100 hover:bg-black transition-all"
+          >
+            + Nova Barbearia
+          </button>
+        )}
       </div>
 
-      <div className="flex bg-white p-2 rounded-[30px] shadow-sm border-2 border-slate-50">
-        <button onClick={() => setActiveSubTab('stats')} className={`flex-1 py-4 rounded-[24px] text-[10px] font-black uppercase tracking-widest transition-all ${activeSubTab === 'stats' ? 'bg-black text-white' : 'text-slate-400 hover:text-black'}`}>📊 Estatísticas</button>
-        <button onClick={() => setActiveSubTab('tenants')} className={`flex-1 py-4 rounded-[24px] text-[10px] font-black uppercase tracking-widest transition-all ${activeSubTab === 'tenants' ? 'bg-black text-white' : 'text-slate-400 hover:text-black'}`}>🏢 Clientes SaaS</button>
-        <button onClick={() => setActiveSubTab('sql')} className={`flex-1 py-4 rounded-[24px] text-[10px] font-black uppercase tracking-widest transition-all ${activeSubTab === 'sql' ? 'bg-orange-500 text-white' : 'text-slate-400 hover:text-black'}`}>⚙️ Configurar Banco (SQL)</button>
-      </div>
-
-      {activeSubTab === 'stats' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-8">
-          <GlobalCard title="Empresas" val={stats.totalTenants.toString()} icon="🏢" />
-          <GlobalCard title="Receita MRR" val={`R$ ${stats.mrr.toLocaleString()}`} icon="💰" color="text-orange-500" />
-          <GlobalCard title="Volume Global" val={`R$ ${stats.globalVolume.toLocaleString()}`} icon="💹" highlight={true} />
-          <GlobalCard title="WhatsApp On" val={stats.activeTenants.toString()} icon="📱" />
-          <GlobalCard title="Faltas Evitadas" val="12K+" icon="🛡️" />
-        </div>
-      )}
-
-      {activeSubTab === 'tenants' && (
-        <div className="bg-white p-12 rounded-[50px] border-2 border-slate-100 shadow-xl overflow-hidden h-[600px] flex flex-col">
-           <div className="flex-1 overflow-y-auto">
-             <table className="w-full text-left">
-               <thead>
-                 <tr className="text-[9px] font-black text-slate-400 uppercase tracking-[0.3em] border-b-2 border-slate-50">
-                   <th className="pb-6">UNIDADE</th>
-                   <th className="pb-6">ACESSO</th>
-                   <th className="pb-6">STATUS</th>
-                   <th className="pb-6 text-right">MENSALIDADE</th>
-                   <th className="pb-6 text-right">AÇÕES</th>
-                 </tr>
-               </thead>
-               <tbody className="divide-y-2 divide-slate-50">
-                 {tenants.map(t => (
-                   <tr key={t.id} className="group hover:bg-slate-50 transition-colors">
-                     <td className="py-6 flex items-center space-x-4">
-                       <div className="w-12 h-12 bg-black text-white rounded-2xl flex items-center justify-center font-black text-lg group-hover:bg-orange-500 transition-all">{t.name[0]}</div>
-                       <div>
-                         <p className="font-black text-black text-sm uppercase tracking-tight">{t.name}</p>
-                         <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1">Slug: {t.slug}</p>
-                       </div>
-                     </td>
-                     <td className="py-6">
-                       <p className="text-[10px] font-black text-black">{t.email || 'N/A'}</p>
-                       <p className="text-[9px] font-bold text-slate-400 font-mono">{t.password || 'N/A'}</p>
-                     </td>
-                     <td className="py-6">
-                        <span className={`text-[9px] font-black px-4 py-1.5 rounded-full uppercase tracking-widest ${
-                          t.status === TenantStatus.ACTIVE ? 'bg-orange-100 text-orange-600' : 
-                          t.status === TenantStatus.PENDING_PAYMENT ? 'bg-red-100 text-red-600' :
-                          'bg-slate-100 text-slate-400'
-                        }`}>
-                          {t.status}
-                        </span>
-                     </td>
-                     <td className="py-6 text-right font-black text-black text-lg">R$ {t.monthlyFee.toLocaleString()}</td>
-                      <td className="py-6 text-right">
-                        <button 
-                          onClick={() => setEditingTenant({ ...t })}
-                          className="text-[10px] font-black text-orange-500 uppercase tracking-widest hover:underline"
-                        >
-                          Editar
-                        </button>
-                      </td>
-                   </tr>
-                 ))}
-               </tbody>
-             </table>
-           </div>
-        </div>
-      )}
-
-      {activeSubTab === 'sql' && (
-        <div className="bg-slate-900 p-12 rounded-[50px] shadow-2xl space-y-8 animate-scaleUp">
-          <div className="flex items-start space-x-6">
-             <div className="text-4xl">🚀</div>
-             <div>
-               <h3 className="text-xl font-black text-white uppercase italic">Configuração do Supabase</h3>
-               <p className="text-slate-400 text-xs font-bold leading-relaxed mt-2 uppercase tracking-widest">
-                 Se o sistema não estiver puxando dados, execute este script no SQL EDITOR do Supabase.
-               </p>
-             </div>
+      {/* ══════════════════════ DASHBOARD ══════════════════════ */}
+      {tab === 'dashboard' && (
+        <div className="space-y-8">
+          {/* Stat cards */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-5">
+            <StatCard label="Total de Clientes" value={String(stats.totalTenants)} icon="🏢" sub={`${stats.newThisMonth} novos este mês`} />
+            <StatCard label="Clientes Ativos" value={String(stats.activeTenants)} icon="✅" color="text-green-600" />
+            <StatCard label="MRR" value={`R$ ${stats.mrr.toLocaleString('pt-BR', { minimumFractionDigits: 0 })}`} icon="💰" color="text-orange-500" highlight />
+            <StatCard label="Faturamento Bruto" value={`R$ ${stats.globalVolume.toLocaleString('pt-BR', { minimumFractionDigits: 0 })}`} icon="💹" sub="Soma de todos os agendamentos finalizados" />
           </div>
-          <div className="relative group">
-            <textarea 
-              readOnly 
-              value={sqlScript}
-              className="w-full h-96 bg-black/50 border-2 border-slate-800 rounded-[30px] p-8 font-mono text-[11px] text-orange-500 outline-none custom-scrollbar"
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-5">
+            <StatCard label="Total de Agendamentos" value={stats.totalAppts.toLocaleString()} icon="📅" />
+            <StatCard label="Total de Clientes Finais" value={stats.totalCustomers.toLocaleString()} icon="👥" />
+            <StatCard label="Ticket Médio Mensalidade" value={stats.activeTenants > 0 ? `R$ ${(stats.mrr / stats.activeTenants).toFixed(0)}` : 'R$ 0'} icon="🎯" />
+            <StatCard label="Inadimplentes / Pausados" value={String((stats.byStatus?.[TenantStatus.PENDING_PAYMENT] || 0) + (stats.byStatus?.[TenantStatus.PAUSED] || 0))} icon="⚠️" color="text-amber-500" />
+          </div>
+
+          {/* Charts row */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Status distribution pie */}
+            <div className="bg-white rounded-3xl border border-slate-100 p-8">
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6">Distribuição por Status</p>
+              {statusPieData.length > 0 ? (
+                <ResponsiveContainer width="100%" height={220}>
+                  <PieChart>
+                    <Pie data={statusPieData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={55} outerRadius={90} paddingAngle={3}>
+                      {statusPieData.map((d, i) => <Cell key={i} fill={d.color} />)}
+                    </Pie>
+                    <Tooltip formatter={(v: any) => [`${v} cliente(s)`, '']} />
+                  </PieChart>
+                </ResponsiveContainer>
+              ) : <p className="text-center text-slate-300 text-xs py-12">Sem dados</p>}
+              <div className="flex flex-wrap gap-3 mt-4">
+                {statusPieData.map(d => (
+                  <div key={d.name} className="flex items-center gap-1.5">
+                    <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: d.color }} />
+                    <span className="text-[9px] font-black text-slate-500 uppercase">{d.name} ({d.value})</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Top clients by fee bar chart */}
+            <div className="bg-white rounded-3xl border border-slate-100 p-8">
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6">Top Clientes por Mensalidade</p>
+              {topTenantsByFee.length > 0 ? (
+                <ResponsiveContainer width="100%" height={220}>
+                  <BarChart data={topTenantsByFee} barSize={24}>
+                    <XAxis dataKey="name" tick={{ fontSize: 9, fontWeight: 900, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                    <YAxis hide />
+                    <Tooltip formatter={(v: any) => [`R$ ${Number(v).toFixed(2)}`, 'Mensalidade']} />
+                    <Bar dataKey="fee" fill="#000" radius={[8, 8, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : <p className="text-center text-slate-300 text-xs py-12">Sem dados</p>}
+            </div>
+          </div>
+
+          {/* Recent tenants list */}
+          <div className="bg-white rounded-3xl border border-slate-100 p-8">
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6">Últimos Clientes Cadastrados</p>
+            <div className="space-y-3">
+              {tenants.slice(0, 5).map(t => (
+                <div key={t.id} className="flex items-center justify-between py-3 border-b border-slate-50 last:border-0">
+                  <div className="flex items-center gap-4">
+                    <div className="w-10 h-10 bg-black text-white rounded-xl flex items-center justify-center font-black text-sm">{t.name[0]}</div>
+                    <div>
+                      <p className="font-black text-sm text-black uppercase">{t.name}</p>
+                      <p className="text-[9px] text-slate-400 font-bold">{t.createdAt ? new Date(t.createdAt).toLocaleDateString('pt-BR') : '—'}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <span className={`text-[9px] font-black px-3 py-1 rounded-full uppercase`} style={{ backgroundColor: `${STATUS_COLORS[t.status]}20`, color: STATUS_COLORS[t.status] }}>
+                      {STATUS_LABELS[t.status] || t.status}
+                    </span>
+                    <span className="font-black text-black text-sm">R$ {t.monthlyFee.toLocaleString()}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══════════════════════ CLIENTS ══════════════════════ */}
+      {tab === 'clients' && (
+        <div className="space-y-6">
+          {/* Filters */}
+          <div className="flex gap-3 flex-wrap">
+            <input
+              value={clientSearch}
+              onChange={e => setClientSearch(e.target.value)}
+              placeholder="🔍 Buscar por nome ou email..."
+              className="flex-1 min-w-[220px] p-3 bg-white border border-slate-200 rounded-2xl text-sm font-semibold outline-none focus:border-orange-500"
             />
-            <button 
-              onClick={() => { navigator.clipboard.writeText(sqlScript); alert("Script SQL Copiado!"); }}
-              className="absolute top-6 right-6 bg-orange-500 text-white px-6 py-2 rounded-xl text-[10px] font-black uppercase hover:bg-white hover:text-orange-500 transition-all shadow-xl"
+            <select
+              value={clientStatusFilter}
+              onChange={e => setClientStatusFilter(e.target.value)}
+              className="p-3 bg-white border border-slate-200 rounded-2xl text-sm font-semibold outline-none focus:border-orange-500"
             >
-              COPIAR SCRIPT
+              <option value="">Todos os status</option>
+              {Object.values(TenantStatus).map(s => <option key={s} value={s}>{STATUS_LABELS[s] || s}</option>)}
+            </select>
+          </div>
+
+          {/* Table */}
+          <div className="bg-white rounded-3xl border border-slate-100 overflow-hidden">
+            <div className="overflow-y-auto max-h-[600px]">
+              <table className="w-full">
+                <thead className="bg-slate-50 sticky top-0">
+                  <tr>
+                    {['Empresa', 'Acesso', 'Telefone', 'Status', 'Mensalidade', 'Venc.', 'Ações'].map(h => (
+                      <th key={h} className="px-5 py-4 text-left text-[9px] font-black text-slate-400 uppercase tracking-widest">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {filteredTenants.length === 0 ? (
+                    <tr><td colSpan={7} className="text-center py-12 text-slate-300 font-black uppercase text-xs">Nenhum cliente encontrado</td></tr>
+                  ) : filteredTenants.map(t => (
+                    <tr key={t.id} className="hover:bg-slate-50/60 transition-colors">
+                      <td className="px-5 py-4">
+                        <div className="flex items-center gap-3">
+                          <div className="w-9 h-9 bg-black text-white rounded-xl flex items-center justify-center font-black text-sm shrink-0">{t.name[0]}</div>
+                          <div>
+                            <p className="font-black text-sm text-black">{t.name}</p>
+                            <p className="text-[9px] text-slate-400">{t.createdAt ? new Date(t.createdAt).toLocaleDateString('pt-BR') : ''}</p>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-5 py-4">
+                        <p className="text-[10px] font-black text-black">{t.email || '—'}</p>
+                        <p className="text-[9px] text-slate-400 font-mono">{t.password || '—'}</p>
+                      </td>
+                      <td className="px-5 py-4 text-[10px] font-bold text-slate-600">{t.phone || '—'}</td>
+                      <td className="px-5 py-4">
+                        <span className="text-[9px] font-black px-3 py-1.5 rounded-full uppercase" style={{ backgroundColor: `${STATUS_COLORS[t.status]}20`, color: STATUS_COLORS[t.status] }}>
+                          {STATUS_LABELS[t.status] || t.status}
+                        </span>
+                      </td>
+                      <td className="px-5 py-4 font-black text-black">R$ {t.monthlyFee.toLocaleString()}</td>
+                      <td className="px-5 py-4 text-sm font-black text-slate-600">{t.due_day ? `Dia ${t.due_day}` : '—'}</td>
+                      <td className="px-5 py-4">
+                        <div className="flex items-center gap-2">
+                          <button onClick={() => onImpersonate(t.id, t.name, t.slug)} className="px-3 py-1.5 bg-orange-50 text-orange-600 rounded-xl font-black text-[9px] uppercase hover:bg-orange-100 transition-all">
+                            Acessar
+                          </button>
+                          <button onClick={() => setEditingTenant({ ...t })} className="px-3 py-1.5 bg-slate-100 text-slate-600 rounded-xl font-black text-[9px] uppercase hover:bg-slate-200 transition-all">
+                            Editar
+                          </button>
+                          <button onClick={() => setDeleteId(t.id)} className="px-3 py-1.5 bg-red-50 text-red-500 rounded-xl font-black text-[9px] uppercase hover:bg-red-100 transition-all">
+                            ✕
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══════════════════════ AVISOS ══════════════════════ */}
+      {tab === 'avisos' && (
+        <div className="space-y-6 max-w-2xl">
+          <div className="bg-white rounded-3xl border border-slate-100 p-8 space-y-6">
+            <div>
+              <h2 className="text-xl font-black text-black uppercase">Enviar Aviso</h2>
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Mensagem enviada via WhatsApp de cada cliente para o telefone do proprietário</p>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Destinatários</label>
+              <div className="flex gap-3">
+                {(['active', 'all'] as const).map(v => (
+                  <button key={v} onClick={() => setAnnounceTo(v)}
+                    className={`flex-1 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest border-2 transition-all ${announceTo === v ? 'bg-black text-white border-black' : 'border-slate-200 text-slate-400 hover:border-black hover:text-black'}`}>
+                    {v === 'active' ? `✅ Somente Ativos (${tenants.filter(t => t.status === TenantStatus.ACTIVE).length})` : `📢 Todos (${tenants.length})`}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Mensagem</label>
+              <textarea
+                value={announceMsg}
+                onChange={e => setAnnounceMsg(e.target.value)}
+                rows={5}
+                placeholder="Digite o aviso para os clientes..."
+                className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl font-semibold text-sm outline-none focus:border-orange-500 resize-none"
+              />
+            </div>
+
+            {announceResult && (
+              <div className={`p-4 rounded-2xl ${announceResult.fail > 0 ? 'bg-amber-50 border border-amber-200' : 'bg-green-50 border border-green-200'}`}>
+                <p className="text-[10px] font-black uppercase tracking-widest">
+                  ✅ {announceResult.ok} enviados · {announceResult.fail > 0 ? `⚠️ ${announceResult.fail} sem telefone/instância` : ''}
+                </p>
+              </div>
+            )}
+
+            <div className="flex gap-4">
+              <button onClick={() => { setAnnounceMsg(''); setAnnounceResult(null); }} className="flex-1 py-3 font-black text-slate-400 uppercase text-xs" disabled={sendingAnnounce}>Limpar</button>
+              <button onClick={handleAnnounce} disabled={sendingAnnounce || !announceMsg.trim()} className="flex-1 py-3 bg-black text-white rounded-2xl font-black uppercase text-xs hover:bg-orange-500 transition-all disabled:opacity-40">
+                {sendingAnnounce ? 'Enviando...' : 'Enviar Aviso →'}
+              </button>
+            </div>
+          </div>
+
+          <div className="bg-amber-50 border border-amber-100 rounded-2xl p-5">
+            <p className="text-[10px] font-black text-amber-700 uppercase tracking-widest">⚠️ Pré-requisito</p>
+            <p className="text-xs text-amber-600 mt-1">Para enviar avisos, cada cliente precisa ter o campo <strong>Telefone do Proprietário</strong> preenchido e o WhatsApp conectado.</p>
+          </div>
+        </div>
+      )}
+
+      {/* ══════════════════════ COBRANÇA ══════════════════════ */}
+      {tab === 'cobranca' && (
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Reminder config */}
+            <div className="bg-white rounded-3xl border border-slate-100 p-8 space-y-6">
+              <div>
+                <h2 className="text-xl font-black text-black uppercase">Lembretes de Cobrança</h2>
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Configure as mensagens enviadas antes do vencimento</p>
+              </div>
+
+              <div className="space-y-4">
+                {billingReminders.map((r, i) => (
+                  <div key={r.daysOffset} className={`rounded-2xl border-2 p-5 space-y-3 transition-all ${r.enabled ? 'border-orange-200 bg-orange-50' : 'border-slate-100 bg-slate-50'}`}>
+                    <div className="flex items-center justify-between">
+                      <p className="text-[10px] font-black text-black uppercase tracking-widest">{r.label}</p>
+                      <button
+                        onClick={() => {
+                          const next = [...billingReminders];
+                          next[i] = { ...r, enabled: !r.enabled };
+                          setBillingReminders(next);
+                          saveBillingConfig(next);
+                        }}
+                        className={`w-12 h-6 rounded-full transition-all relative ${r.enabled ? 'bg-orange-500' : 'bg-slate-200'}`}
+                      >
+                        <div className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all ${r.enabled ? 'left-6' : 'left-0.5'}`} />
+                      </button>
+                    </div>
+                    {r.enabled && (
+                      <textarea
+                        value={r.message}
+                        onChange={e => {
+                          const next = [...billingReminders];
+                          next[i] = { ...r, message: e.target.value };
+                          setBillingReminders(next);
+                          saveBillingConfig(next);
+                        }}
+                        rows={3}
+                        className="w-full p-3 bg-white border border-slate-200 rounded-xl text-xs font-semibold outline-none focus:border-orange-400 resize-none"
+                      />
+                    )}
+                    {r.enabled && (
+                      <p className="text-[9px] text-slate-400 font-bold">Variáveis: <span className="text-orange-500">{'{nome}'} {'{valor}'} {'{dia}'}</span></p>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {billingResult && (
+                <div className="bg-green-50 border border-green-200 rounded-2xl p-4">
+                  <p className="text-[10px] font-black text-green-700 uppercase tracking-widest">{billingResult}</p>
+                </div>
+              )}
+
+              <button onClick={handleRunBilling} disabled={runningBilling} className="w-full py-3 bg-black text-white rounded-2xl font-black uppercase text-xs hover:bg-orange-500 transition-all disabled:opacity-40">
+                {runningBilling ? 'Verificando...' : '▶ Executar Verificação Agora'}
+              </button>
+            </div>
+
+            {/* Per-tenant due day config */}
+            <div className="bg-white rounded-3xl border border-slate-100 p-8 space-y-4">
+              <div>
+                <h2 className="text-xl font-black text-black uppercase">Vencimentos por Cliente</h2>
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Dia do mês em que a mensalidade vence</p>
+              </div>
+              <div className="space-y-3 overflow-y-auto max-h-[420px] pr-1">
+                {tenants.filter(t => t.status === TenantStatus.ACTIVE || t.status === TenantStatus.PENDING_PAYMENT).map(t => (
+                  <div key={t.id} className="flex items-center gap-4 py-3 border-b border-slate-50 last:border-0">
+                    <div className="w-8 h-8 bg-black text-white rounded-xl flex items-center justify-center font-black text-xs shrink-0">{t.name[0]}</div>
+                    <p className="font-black text-xs text-black flex-1 uppercase truncate">{t.name}</p>
+                    <p className="text-[9px] text-slate-400 truncate max-w-[100px]">{t.phone || 'sem tel.'}</p>
+                    <input
+                      type="number"
+                      min={1} max={31}
+                      value={t.due_day || ''}
+                      placeholder="dia"
+                      onChange={async e => {
+                        const d = parseInt(e.target.value) || undefined;
+                        await db.updateTenant(t.id, { due_day: d });
+                        setTenants(prev => prev.map(x => x.id === t.id ? { ...x, due_day: d } : x));
+                      }}
+                      className="w-16 p-2 bg-slate-50 border border-slate-200 rounded-xl font-black text-center text-xs outline-none focus:border-orange-400"
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══════════════════════ LOGS ══════════════════════ */}
+      {tab === 'logs' && (
+        <div className="bg-white rounded-3xl border border-slate-100 p-8 space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-black text-black uppercase">Logs de Atividade</h2>
+            <button onClick={() => { localStorage.removeItem('agz_admin_logs'); setLogs([]); }} className="text-[9px] font-black text-red-400 uppercase hover:text-red-600">Limpar</button>
+          </div>
+          {logs.length === 0 ? (
+            <p className="text-center text-slate-300 font-black uppercase text-xs py-12">Nenhuma atividade registrada</p>
+          ) : (
+            <div className="space-y-2 overflow-y-auto max-h-[600px]">
+              {logs.map((log, i) => (
+                <div key={i} className="flex items-start gap-4 py-3 border-b border-slate-50 last:border-0">
+                  <div className="text-[9px] font-black text-slate-300 w-32 shrink-0">{new Date(log.ts).toLocaleString('pt-BR')}</div>
+                  <span className={`text-[8px] font-black px-2 py-0.5 rounded-full uppercase shrink-0 ${
+                    log.action.includes('CREATED') ? 'bg-green-100 text-green-600' :
+                    log.action.includes('DELETED') ? 'bg-red-100 text-red-500' :
+                    log.action.includes('BILLING') ? 'bg-orange-100 text-orange-600' :
+                    'bg-slate-100 text-slate-500'
+                  }`}>{log.action.replace(/_/g, ' ')}</span>
+                  <p className="text-xs font-bold text-slate-600 flex-1">{log.detail}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ══════════════════════ SQL ══════════════════════ */}
+      {tab === 'sql' && (
+        <div className="bg-slate-900 p-10 rounded-3xl shadow-2xl space-y-6 animate-scaleUp">
+          <div className="flex items-start gap-5">
+            <div className="text-4xl">🚀</div>
+            <div>
+              <h3 className="text-xl font-black text-white uppercase">Configuração do Supabase</h3>
+              <p className="text-slate-400 text-xs font-bold leading-relaxed mt-1 uppercase tracking-widest">Execute no SQL Editor do Supabase para criar/reparar as tabelas.</p>
+            </div>
+          </div>
+          <div className="relative">
+            <textarea readOnly value={sqlScript} className="w-full h-80 bg-black/50 border-2 border-slate-800 rounded-2xl p-6 font-mono text-[11px] text-orange-400 outline-none resize-none" />
+            <button onClick={() => { navigator.clipboard.writeText(sqlScript); }} className="absolute top-4 right-4 bg-orange-500 text-white px-5 py-2 rounded-xl text-[10px] font-black uppercase hover:bg-white hover:text-orange-500 transition-all">
+              Copiar
             </button>
           </div>
         </div>
       )}
 
-      {showModal && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-          <div className="bg-white rounded-[50px] w-full max-w-md p-12 space-y-10 animate-scaleUp border-4 border-black">
-             {!successData ? (
-               <>
-                 <h2 className="text-3xl font-black text-black uppercase tracking-tight italic">Nova Unidade</h2>
-                 <div className="space-y-6">
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-4">Nome da Barbearia</label>
-                      <input value={name} onChange={e=>setName(e.target.value)} placeholder="EX: BARBER SHOP" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-[24px] outline-none font-black text-xs uppercase tracking-widest focus:border-orange-500" />
+      {/* ══════════════════════ MODALS ══════════════════════ */}
+
+      {/* New tenant modal */}
+      {showNew && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] overflow-y-auto">
+          <div className="flex items-center justify-center min-h-full p-4">
+            <div className="bg-white rounded-[40px] w-full max-w-md p-12 space-y-8 animate-scaleUp border-4 border-black">
+              {!successData ? (
+                <>
+                  <h2 className="text-2xl font-black text-black uppercase tracking-tight">Nova Barbearia</h2>
+                  <div className="space-y-4">
+                    {([
+                      ['Nome da Barbearia *', newName, setNewName, 'text', 'Ex: Barber Centro'],
+                      ['E-mail (auto se vazio)', newEmail, setNewEmail, 'email', 'email@exemplo.com'],
+                      ['Senha (auto se vazio)', newPass, setNewPass, 'text', 'Senha123'],
+                      ['Telefone do proprietário', newPhone, setNewPhone, 'text', '5511999999999'],
+                    ] as [string, string, (v: string) => void, string, string][]).map(([label, val, fn, type, ph]) => (
+                      <div key={label} className="space-y-1">
+                        <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-4">{label}</label>
+                        <input type={type} value={val} onChange={e => fn(e.target.value)} placeholder={ph}
+                          className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none font-bold text-sm focus:border-orange-500" />
+                      </div>
+                    ))}
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-4">Mensalidade (R$)</label>
+                        <input type="number" value={newFee} onChange={e => setNewFee(e.target.value)} placeholder="0.00"
+                          className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none font-bold text-sm focus:border-orange-500" />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-4">Dia de vencimento</label>
+                        <input type="number" min={1} max={31} value={newDueDay} onChange={e => setNewDueDay(e.target.value)} placeholder="Ex: 10"
+                          className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none font-bold text-sm focus:border-orange-500" />
+                      </div>
                     </div>
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-4">E-mail de Acesso</label>
-                      <input value={email} onChange={e=>setEmail(e.target.value)} placeholder="EMAIL@EXEMPLO.COM" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-[24px] outline-none font-black text-xs uppercase tracking-widest focus:border-orange-500" />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-4">Senha de Acesso</label>
-                      <input value={password} onChange={e=>setPassword(e.target.value)} placeholder="SENHA123" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-[24px] outline-none font-black text-xs uppercase tracking-widest focus:border-orange-500" />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-4">Valor da Mensalidade (R$)</label>
-                      <input type="number" value={monthlyFee} onChange={e=>setMonthlyFee(e.target.value)} placeholder="0.00" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-[24px] outline-none font-black text-xs uppercase tracking-widest focus:border-orange-500" />
-                    </div>
-                 </div>
-                 <div className="flex gap-4">
-                    <button onClick={() => setShowModal(false)} className="flex-1 py-5 font-black text-slate-400 uppercase text-xs tracking-widest" disabled={creatingInstance}>Cancelar</button>
-                    <button onClick={handleCreateCompany} className="flex-1 py-5 bg-black text-white rounded-[24px] font-black uppercase text-xs tracking-widest hover:bg-orange-500 transition-all disabled:opacity-50" disabled={creatingInstance}>
-                      {creatingInstance ? 'CRIANDO...' : 'Ativar Acesso'}
-                    </button>
-                 </div>
-               </>
-             ) : (
-               <div className="text-center space-y-10">
-                  <div className="w-24 h-24 bg-orange-100 text-orange-500 rounded-full flex items-center justify-center text-5xl mx-auto shadow-xl">✓</div>
-                  <h2 className="text-2xl font-black text-black uppercase tracking-tight">Licença Ativada!</h2>
-                  <div className="bg-slate-50 p-8 rounded-[35px] text-left border-2 border-slate-100 space-y-4">
-                    <p className="text-[10px] font-black text-slate-400 uppercase mb-1">Acesso:</p>
-                    <p className="text-sm font-black text-black break-all">{successData.email}</p>
-                    <p className="text-[10px] font-black text-slate-400 uppercase mt-4 mb-1">Senha:</p>
-                    <p className="text-lg font-black text-orange-500 font-mono">{successData.pass}</p>
                   </div>
-                  <button onClick={() => {setShowModal(false); setSuccessData(null);}} className="w-full py-5 bg-black text-white rounded-[24px] font-black uppercase text-xs tracking-widest">Finalizar</button>
-               </div>
-             )}
+                  <div className="flex gap-4">
+                    <button onClick={() => setShowNew(false)} className="flex-1 py-4 font-black text-slate-400 uppercase text-xs" disabled={creating}>Cancelar</button>
+                    <button onClick={handleCreate} disabled={creating || !newName.trim()} className="flex-1 py-4 bg-black text-white rounded-2xl font-black uppercase text-xs hover:bg-orange-500 transition-all disabled:opacity-50">
+                      {creating ? 'Criando...' : 'Ativar Acesso'}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div className="text-center space-y-8">
+                  <div className="w-20 h-20 bg-green-100 text-green-500 rounded-full flex items-center justify-center text-4xl mx-auto">✓</div>
+                  <h2 className="text-2xl font-black text-black uppercase">Licença Ativada!</h2>
+                  <div className="bg-slate-50 p-6 rounded-2xl text-left border border-slate-100 space-y-3">
+                    <p className="text-[9px] font-black text-slate-400 uppercase">E-mail</p>
+                    <p className="font-black text-black break-all">{successData.email}</p>
+                    <p className="text-[9px] font-black text-slate-400 uppercase mt-3">Senha</p>
+                    <p className="text-xl font-black text-orange-500 font-mono">{successData.pass}</p>
+                    <p className="text-[9px] font-black text-slate-400 uppercase mt-3">Link de agendamento</p>
+                    <p className="text-xs font-bold text-blue-500 break-all">{window.location.origin}{window.location.pathname}#/agendar/{successData.slug}</p>
+                  </div>
+                  <button onClick={() => { setShowNew(false); setSuccessData(null); }} className="w-full py-4 bg-black text-white rounded-2xl font-black uppercase text-xs">Fechar</button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
 
+      {/* Edit tenant modal */}
       {editingTenant && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-          <div className="bg-white rounded-[50px] w-full max-w-md p-12 space-y-10 animate-scaleUp border-4 border-orange-500">
-            <h2 className="text-3xl font-black text-black uppercase tracking-tight italic">Editar Unidade</h2>
-            <div className="space-y-6">
-              <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-4">E-mail de Acesso</label>
-                <input 
-                  type="email" 
-                  value={editingTenant.email || ''} 
-                  onChange={e => setEditingTenant({ ...editingTenant, email: e.target.value })}
-                  className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-[24px] outline-none font-black text-xs uppercase tracking-widest focus:border-orange-500"
-                />
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] overflow-y-auto">
+          <div className="flex items-center justify-center min-h-full p-4">
+            <div className="bg-white rounded-[40px] w-full max-w-md p-12 space-y-6 animate-scaleUp border-4 border-orange-500">
+              <h2 className="text-2xl font-black text-black uppercase tracking-tight">Editar — {editingTenant.name}</h2>
+              <div className="space-y-4">
+                {([
+                  ['E-mail', editingTenant.email || '', (v: string) => setEditingTenant({ ...editingTenant, email: v }), 'email'],
+                  ['Senha', editingTenant.password || '', (v: string) => setEditingTenant({ ...editingTenant, password: v }), 'text'],
+                  ['Telefone do proprietário', editingTenant.phone || '', (v: string) => setEditingTenant({ ...editingTenant, phone: v }), 'text'],
+                ] as [string, string, (v: string) => void, string][]).map(([label, val, fn, type]) => (
+                  <div key={label} className="space-y-1">
+                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-4">{label}</label>
+                    <input type={type} value={val} onChange={e => fn(e.target.value)}
+                      className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none font-bold text-sm focus:border-orange-500" />
+                  </div>
+                ))}
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-4">Status</label>
+                    <select value={editingTenant.status} onChange={e => setEditingTenant({ ...editingTenant, status: e.target.value as TenantStatus })}
+                      className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none font-bold text-sm focus:border-orange-500">
+                      {Object.values(TenantStatus).map(s => <option key={s} value={s}>{STATUS_LABELS[s] || s}</option>)}
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-4">Dia de vencimento</label>
+                    <input type="number" min={1} max={31} value={editingTenant.due_day || ''} onChange={e => setEditingTenant({ ...editingTenant, due_day: parseInt(e.target.value) || undefined })}
+                      className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none font-bold text-center focus:border-orange-500" />
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-4">Mensalidade (R$)</label>
+                  <input type="number" value={editingTenant.monthlyFee} onChange={e => setEditingTenant({ ...editingTenant, monthlyFee: parseFloat(e.target.value) || 0 })}
+                    className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none font-bold text-sm focus:border-orange-500" />
+                </div>
               </div>
-              <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-4">Senha</label>
-                <input 
-                  type="text" 
-                  value={editingTenant.password || ''} 
-                  onChange={e => setEditingTenant({ ...editingTenant, password: e.target.value })}
-                  className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-[24px] outline-none font-black text-xs uppercase tracking-widest focus:border-orange-500"
-                />
-              </div>
-              <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-4">Status da Licença</label>
-                <select 
-                  value={editingTenant.status} 
-                  onChange={e => setEditingTenant({ ...editingTenant, status: e.target.value as TenantStatus })}
-                  className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-[24px] outline-none font-black text-xs uppercase tracking-widest focus:border-orange-500"
-                >
-                  {Object.values(TenantStatus).map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
-              </div>
-              <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-4">Valor Mensalidade (R$)</label>
-                <input 
-                  type="number" 
-                  value={editingTenant.monthlyFee} 
-                  onChange={e => setEditingTenant({ ...editingTenant, monthlyFee: parseFloat(e.target.value) || 0 })}
-                  className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-[24px] outline-none font-black text-xs uppercase tracking-widest focus:border-orange-500"
-                />
+              <div className="flex gap-4">
+                <button onClick={() => setEditingTenant(null)} className="flex-1 py-4 font-black text-slate-400 uppercase text-xs" disabled={saving}>Cancelar</button>
+                <button onClick={handleUpdate} disabled={saving} className="flex-1 py-4 bg-black text-white rounded-2xl font-black uppercase text-xs hover:bg-orange-500 transition-all disabled:opacity-50">
+                  {saving ? 'Salvando...' : 'Salvar'}
+                </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete confirm modal */}
+      {deleteId && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+          <div className="bg-white rounded-[40px] w-full max-w-sm p-10 space-y-6 animate-scaleUp border-4 border-red-500 text-center">
+            <div className="text-5xl">⚠️</div>
+            <h2 className="text-2xl font-black text-black uppercase">Excluir Cliente?</h2>
+            <p className="text-sm text-slate-500 font-bold">
+              Esta ação irá excluir <strong>{tenants.find(t => t.id === deleteId)?.name}</strong> e todos os dados relacionados. <span className="text-red-500">Não pode ser desfeito.</span>
+            </p>
             <div className="flex gap-4">
-              <button onClick={() => setEditingTenant(null)} className="flex-1 py-5 font-black text-slate-400 uppercase text-xs tracking-widest" disabled={creatingInstance}>Cancelar</button>
-              <button onClick={handleUpdateTenant} className="flex-1 py-5 bg-black text-white rounded-[24px] font-black uppercase text-xs tracking-widest hover:bg-orange-500 transition-all disabled:opacity-50" disabled={creatingInstance}>
-                {creatingInstance ? 'SALVANDO...' : 'Salvar Alterações'}
-              </button>
+              <button onClick={() => setDeleteId(null)} className="flex-1 py-4 font-black text-slate-400 uppercase text-xs border-2 border-slate-100 rounded-2xl hover:border-black transition-all">Cancelar</button>
+              <button onClick={handleDelete} className="flex-1 py-4 bg-red-500 text-white rounded-2xl font-black uppercase text-xs hover:bg-red-600 transition-all">Excluir</button>
             </div>
           </div>
         </div>
@@ -494,11 +841,16 @@ CREATE TABLE IF NOT EXISTS expenses (
   );
 };
 
-const GlobalCard = ({ title, val, icon, color, highlight }: any) => (
-  <div className={`bg-white p-8 rounded-[40px] border-2 shadow-xl transition-all ${highlight ? 'border-orange-500 shadow-orange-100/50 scale-105' : 'border-slate-100 shadow-slate-100/50 hover:border-black'}`}>
-    <div className="text-3xl mb-4">{icon}</div>
-    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">{title}</p>
-    <p className={`text-2xl font-black ${color || 'text-black'}`}>{val}</p>
+// ── Sub-components ────────────────────────────────────────────────────────────
+
+const StatCard = ({ label, value, icon, sub, color, highlight }: {
+  label: string; value: string; icon: string; sub?: string; color?: string; highlight?: boolean;
+}) => (
+  <div className={`bg-white rounded-2xl border-2 p-6 transition-all ${highlight ? 'border-orange-400 shadow-lg shadow-orange-100/50' : 'border-slate-100 hover:border-slate-200'}`}>
+    <div className="text-2xl mb-3">{icon}</div>
+    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">{label}</p>
+    <p className={`text-2xl font-black ${color || 'text-black'}`}>{value}</p>
+    {sub && <p className="text-[8px] font-bold text-slate-300 uppercase tracking-widest mt-1">{sub}</p>}
   </div>
 );
 

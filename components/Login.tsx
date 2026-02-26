@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 
 interface LoginProps {
-  onLogin: (role: 'SUPERADMIN' | 'TENANT', userSlug?: string) => Promise<void> | void;
+  onLogin: (role: 'SUPERADMIN' | 'TENANT', userSlug?: string, userEmail?: string, userPassword?: string) => Promise<void> | void;
   onRegister?: (storeName: string, email: string, pass: string) => Promise<void>;
 }
 
@@ -56,7 +56,7 @@ const Login: React.FC<LoginProps> = ({ onLogin, onRegister }) => {
           return;
         }
 
-        await onLogin('TENANT', slug);
+        await onLogin('TENANT', slug, cleanEmail, cleanPassword);
       }
     } catch (err: any) {
       console.error("Submit Error:", err);

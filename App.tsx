@@ -16,6 +16,7 @@ import PlansView from './components/PlansView';
 import ConversationsView from './components/ConversationsView';
 import BroadcastView from './components/BroadcastView';
 import ConexoesView from './components/ConexoesView';
+import EstoqueView from './components/EstoqueView';
 import SuperAdminView from './components/SuperAdminView';
 import Login from './components/Login';
 import AiPollingManager from './components/AiPollingManager';
@@ -38,10 +39,12 @@ enum View {
   PLANOS = 'PLANOS',
   CONVERSAS = 'CONVERSAS',
   DISPARADOR = 'DISPARADOR',
+  ESTOQUE = 'ESTOQUE',
   SUPERADMIN_DASHBOARD = 'SUPERADMIN_DASHBOARD'
 }
 
 type Role = 'TENANT' | 'SUPERADMIN';
+type SuperAdminTab = 'dashboard' | 'clients' | 'avisos' | 'cobranca' | 'logs' | 'sql';
 
 const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -51,6 +54,8 @@ const App: React.FC = () => {
   const [tenantSlug, setTenantSlug] = useState<string>('');
   const [tenantName, setTenantName] = useState<string>('Carregando...');
   const [isReady, setIsReady] = useState(false);
+  const [isImpersonating, setIsImpersonating] = useState(false);
+  const [superAdminTab, setSuperAdminTab] = useState<SuperAdminTab>('dashboard');
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('agz_dark') === '1');
 
   useEffect(() => {
@@ -76,7 +81,7 @@ const App: React.FC = () => {
     init();
   }, []);
 
-  const handleLogin = async (selectedRole: Role, userSlug?: string) => {
+  const handleLogin = async (selectedRole: Role, userSlug?: string, userEmail?: string, userPassword?: string) => {
     console.log(`Tentativa de login: ${selectedRole}, Slug: ${userSlug}`);
     try {
       if (selectedRole === 'SUPERADMIN') {
@@ -88,25 +93,35 @@ const App: React.FC = () => {
 
       if (userSlug) {
         const targetSlug = userSlug.toLowerCase().trim();
-        console.log(`Buscando barbearia: ${targetSlug}`);
         const tenants = await db.getAllTenants();
+
+        // 1st try: find by slug (fast path for self-registered tenants)
         let myTenant = tenants.find(t => t.slug === targetSlug);
+
+        // 2nd try: find by stored email (for SuperAdmin-created tenants with custom email)
+        if (!myTenant && userEmail) {
+          myTenant = tenants.find(t => t.email?.toLowerCase() === userEmail.toLowerCase());
+        }
 
         if (!myTenant) {
           console.warn(`Barbearia não encontrada: ${targetSlug}`);
-          alert("Barbearia não encontrada. Verifique o e-mail ou cadastre-se.");
+          alert("Barbearia não encontrada. Verifique o e-mail cadastrado ou entre em contato com o suporte.");
           return;
         }
 
-        if (myTenant) {
-          console.log(`Login bem-sucedido: ${myTenant.name}`);
-          setTenantId(myTenant.id);
-          setTenantSlug(myTenant.slug);
-          setTenantName(myTenant.name);
-          setRole('TENANT');
-          setIsAuthenticated(true);
-          setCurrentView(View.DASHBOARD);
+        // Validate password if one is stored for this tenant
+        if (myTenant.password && userPassword && myTenant.password !== userPassword) {
+          alert("Senha incorreta.");
+          return;
         }
+
+        console.log(`Login bem-sucedido: ${myTenant.name}`);
+        setTenantId(myTenant.id);
+        setTenantSlug(myTenant.slug);
+        setTenantName(myTenant.name);
+        setRole('TENANT');
+        setIsAuthenticated(true);
+        setCurrentView(View.DASHBOARD);
       }
     } catch (err) {
       console.error("Login Error:", err);
@@ -155,7 +170,25 @@ const App: React.FC = () => {
     setRole('TENANT');
     setTenantId('');
     setTenantSlug('');
+    setIsImpersonating(false);
     setCurrentView(View.DASHBOARD);
+  };
+
+  const handleImpersonate = (id: string, name: string, slug: string) => {
+    setTenantId(id);
+    setTenantSlug(slug);
+    setTenantName(name);
+    setRole('TENANT');
+    setIsImpersonating(true);
+    setCurrentView(View.DASHBOARD);
+  };
+
+  const handleExitImpersonation = () => {
+    setRole('SUPERADMIN');
+    setIsImpersonating(false);
+    setTenantId('');
+    setTenantSlug('');
+    setCurrentView(View.SUPERADMIN_DASHBOARD);
   };
 
   // Public booking page — no auth required
@@ -179,7 +212,7 @@ const App: React.FC = () => {
   }
 
   const renderView = () => {
-    if (role === 'SUPERADMIN') return <SuperAdminView />;
+    if (role === 'SUPERADMIN') return <SuperAdminView activeTab={superAdminTab} onTabChange={setSuperAdminTab} onImpersonate={handleImpersonate} />;
 
     switch (currentView) {
       case View.DASHBOARD: return <Dashboard tenantId={tenantId} />;
@@ -195,6 +228,7 @@ const App: React.FC = () => {
       case View.TEST_WA: return <AIChatSimulator tenantId={tenantId} />;
       case View.CONVERSAS: return <ConversationsView tenantId={tenantId} />;
       case View.DISPARADOR: return <BroadcastView tenantId={tenantId} />;
+      case View.ESTOQUE: return <EstoqueView tenantId={tenantId} />;
       case View.CONFIGURACOES: return <GeneralSettings tenantId={tenantId} />;
       default: return <Dashboard tenantId={tenantId} />;
     }
@@ -214,7 +248,17 @@ const App: React.FC = () => {
 
         <nav className="flex-1 px-4 py-2 space-y-1 overflow-y-auto custom-scrollbar">
           {role === 'SUPERADMIN' ? (
-            <NavItem active={true} onClick={() => {}} icon={<IconDashboard />} label="Painel Mestre" />
+            <>
+              <NavItem active={superAdminTab === 'dashboard'} onClick={() => setSuperAdminTab('dashboard')} icon={<IconDashboard />} label="Dashboard" />
+              <NavItem active={superAdminTab === 'clients'} onClick={() => setSuperAdminTab('clients')} icon={<IconUsers />} label="Clientes SaaS" />
+              <NavItem active={superAdminTab === 'avisos'} onClick={() => setSuperAdminTab('avisos')} icon={<IconBroadcast />} label="Avisos" />
+              <NavItem active={superAdminTab === 'cobranca'} onClick={() => setSuperAdminTab('cobranca')} icon={<IconFinance />} label="Cobrança" />
+              <div className="pt-4 border-t border-slate-100 mt-2 space-y-1">
+                <p className="text-[9px] font-black text-slate-300 uppercase tracking-[0.2em] px-4 pb-1">Sistema</p>
+                <NavItem active={superAdminTab === 'logs'} onClick={() => setSuperAdminTab('logs')} icon={<IconTerminal />} label="Logs" />
+                <NavItem active={superAdminTab === 'sql'} onClick={() => setSuperAdminTab('sql')} icon={<IconSettings />} label="Banco SQL" />
+              </div>
+            </>
           ) : (
             <>
               <NavItem active={currentView === View.DASHBOARD} onClick={() => setCurrentView(View.DASHBOARD)} icon={<IconDashboard />} label="Início" />
@@ -223,6 +267,7 @@ const App: React.FC = () => {
               <NavItem active={currentView === View.PROFISSIONAIS} onClick={() => setCurrentView(View.PROFISSIONAIS)} icon={<IconUsers />} label="Equipe" />
               <NavItem active={currentView === View.CLIENTES} onClick={() => setCurrentView(View.CLIENTES)} icon={<IconUserCircle />} label="Clientes" />
               <NavItem active={currentView === View.FINANCEIRO} onClick={() => setCurrentView(View.FINANCEIRO)} icon={<IconFinance />} label="Caixa" />
+              <NavItem active={currentView === View.ESTOQUE} onClick={() => setCurrentView(View.ESTOQUE)} icon={<IconBox />} label="Estoque" />
               
               <div className="pt-6 pb-2 mt-4 border-t border-slate-100">
                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-3 px-4">Conexões</p>
@@ -241,7 +286,12 @@ const App: React.FC = () => {
           </div>
         </nav>
 
-        <div className="p-6 border-t border-slate-100 bg-slate-50/50">
+        <div className="p-6 border-t border-slate-100 bg-slate-50/50 space-y-2">
+          {isImpersonating && (
+            <button onClick={handleExitImpersonation} className="flex items-center gap-2 w-full bg-orange-500 text-white px-4 py-2.5 rounded-xl font-black text-[9px] uppercase tracking-widest hover:bg-black transition-all">
+              <span>↩</span><span>Sair da conta</span>
+            </button>
+          )}
           <button onClick={handleLogout} className="flex items-center space-x-3 w-full text-slate-400 hover:text-red-500 transition-all font-bold text-xs uppercase tracking-widest">
             <IconLogout /> <span>Sair</span>
           </button>
@@ -251,7 +301,11 @@ const App: React.FC = () => {
       <main className="flex-1 overflow-auto h-screen relative">
         <header className="px-10 py-6 flex items-center justify-between sticky top-0 bg-white/80 backdrop-blur-md z-40 border-b border-slate-100">
           <div>
-            <h2 className="text-xl font-black text-black tracking-tight uppercase">{role === 'SUPERADMIN' ? 'Gestão Global do SaaS' : tenantName}</h2>
+            <h2 className="text-xl font-black text-black tracking-tight uppercase">
+              {role === 'SUPERADMIN'
+                ? ({ dashboard: 'Dashboard Global', clients: 'Clientes SaaS', avisos: 'Enviar Avisos', cobranca: 'Gestão de Cobrança', logs: 'Logs de Atividade', sql: 'Configurar Banco SQL' } as Record<SuperAdminTab, string>)[superAdminTab]
+                : tenantName}
+            </h2>
           </div>
           <div className="flex items-center gap-3">
             {!dbOnline && (
@@ -290,6 +344,7 @@ const IconUsers = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h
 const IconUserCircle = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="10" r="3"></circle><path d="M7 20.662V19a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v1.662"></path></svg>;
 const IconRobot = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"></rect><circle cx="12" cy="5" r="2"></circle><path d="M12 7v4"></path><line x1="8" y1="16" x2="8" y2="16"></line><line x1="16" y1="16" x2="16" y2="16"></line></svg>;
 const IconFinance = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="1" x2="12" y2="23"></line><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>;
+const IconBox = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>;
 const IconWhatsapp = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 1 1-7.6-11.7 8.38 8.38 0 0 1 3.8.9L21 3z"></path></svg>;
 const IconClock = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>;
 const IconSettings = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1-2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>;

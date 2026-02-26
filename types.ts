@@ -44,11 +44,25 @@ export interface FollowUpConfig {
 export interface BreakPeriod {
   id: string;
   label: string;
+  type?: 'break' | 'lunch' | 'vacation'; // default 'break'
   professionalId?: string | null; // null or absent = applies to all professionals
   date?: string | null;           // YYYY-MM-DD, one-time; null = recurring
+  vacationEndDate?: string | null; // for type='vacation': last day of vacation
   dayOfWeek?: number | null;      // 0-6 for weekly-recurring; null = every day
   startTime: string;              // HH:mm
   endTime: string;                // HH:mm
+}
+
+// Stock / inventory item
+export interface InventoryItem {
+  id: string;
+  name: string;
+  category?: string;
+  quantity: number;
+  unit: string;         // "unidades", "ml", "g", "kg", "L"
+  purchaseCost: number; // cost per unit at last purchase
+  minStock?: number;    // low-stock alert threshold
+  lastUpdated: string;  // ISO datetime
 }
 
 // Monthly / recurring service plan (package)
@@ -110,6 +124,8 @@ export interface TenantSettings {
     lembreteModeId?: string;
     reativacaoModeId?: string;
   }>;
+  followUpSent?: Record<string, string>; // tracks sent messages e.g. "aviso::apptId" → "YYYY-MM-DD"
+  inventory?: InventoryItem[];           // product stock list
 }
 
 export interface Appointment {
@@ -151,6 +167,9 @@ export interface Tenant {
   slug: string;
   email?: string;
   password?: string;
+  phone?: string;           // owner phone for billing/announcement reminders
+  due_day?: number;         // payment due day of month (1-31)
+  evolution_instance?: string;
   plan: 'BASIC' | 'PRO' | 'ENTERPRISE';
   status: TenantStatus;
   monthlyFee: number;

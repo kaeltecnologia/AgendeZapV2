@@ -21,7 +21,7 @@ import {
   Tenant, Professional, Service, Appointment,
   Customer, AppointmentStatus, PaymentMethod, TenantSettings,
   TenantStatus, BookingSource, Expense, BreakPeriod, Plan,
-  FollowUpNamedMode
+  FollowUpNamedMode, InventoryItem
 } from '../types';
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -83,6 +83,9 @@ class DatabaseService {
         slug: t.slug,
         email: t.email,
         password: t.password,
+        phone: t.phone,
+        due_day: t.due_day ? Number(t.due_day) : undefined,
+        evolution_instance: t.evolution_instance,
         plan: t.plan || 'BASIC',
         status: t.status as TenantStatus,
         monthlyFee: Number(t.mensalidade || 0),
@@ -104,6 +107,9 @@ class DatabaseService {
         slug: data.slug,
         email: data.email,
         password: data.password,
+        phone: data.phone,
+        due_day: data.due_day ? Number(data.due_day) : undefined,
+        evolution_instance: data.evolution_instance,
         plan: data.plan || 'BASIC',
         status: data.status as TenantStatus,
         monthlyFee: Number(data.mensalidade || 0),
@@ -155,10 +161,22 @@ class DatabaseService {
       if (updates.plan) payload.plan = updates.plan;
       if (updates.email !== undefined) payload.email = updates.email;
       if (updates.password !== undefined) payload.password = updates.password;
+      if (updates.phone !== undefined) payload.phone = updates.phone;
+      if (updates.due_day !== undefined) payload.due_day = updates.due_day;
       const { error } = await supabase.from('tenants').update(payload).eq('id', id);
       if (error) throw error;
     } catch (e) {
       console.error("Supabase Tenant Update Error:", e);
+      throw e;
+    }
+  }
+
+  async deleteTenant(id: string) {
+    try {
+      const { error } = await supabase.from('tenants').delete().eq('id', id);
+      if (error) throw error;
+    } catch (e) {
+      console.error("Supabase Tenant Delete Error:", e);
       throw e;
     }
   }
@@ -596,7 +614,9 @@ class DatabaseService {
       plans: [],
       planUsage: {},
       professionalMeta: {},
-      customerData: {}
+      customerData: {},
+      followUpSent: {},
+      inventory: []
     };
     try {
       const { data, error } = await supabase.from('tenant_settings').select('*').eq('tenant_id', tenantId).maybeSingle();
@@ -621,7 +641,9 @@ class DatabaseService {
           plans: fu._plans || [],
           planUsage: fu._planUsage || {},
           professionalMeta: fu._professionalMeta || {},
-          customerData: fu._customerData || {}
+          customerData: fu._customerData || {},
+          followUpSent: fu._followUpSent || {},
+          inventory: fu._inventory || []
         };
       }
     } catch (e) {
@@ -647,7 +669,9 @@ class DatabaseService {
         _plans: newS.plans ?? curr.plans ?? [],
         _planUsage: newS.planUsage ?? curr.planUsage ?? {},
         _professionalMeta: newS.professionalMeta ?? curr.professionalMeta ?? {},
-        _customerData: newS.customerData ?? curr.customerData ?? {}
+        _customerData: newS.customerData ?? curr.customerData ?? {},
+        _followUpSent: newS.followUpSent ?? curr.followUpSent ?? {},
+        _inventory: newS.inventory ?? curr.inventory ?? []
       };
 
       const { error } = await supabase.from('tenant_settings').upsert(
@@ -770,15 +794,43 @@ class DatabaseService {
   async getGlobalStats() {
     try {
       const tenants = await this.getAllTenants();
+      const active = tenants.filter(t => t.status === TenantStatus.ACTIVE);
+      const nowMonth = new Date().toISOString().slice(0, 7);
+      const newThisMonth = tenants.filter(t => t.createdAt?.startsWith(nowMonth)).length;
+
+      // Global appointments aggregation
+      const { data: appts } = await supabase
+        .from('appointments')
+        .select('status, amount_paid');
+      const allAppts = appts || [];
+      const totalAppts = allAppts.length;
+      const grossBilling = allAppts
+        .filter((a: any) => a.status === 'FINALIZADO' || a.status === 'FINISHED' || a.status === 'CONCLUIDO')
+        .reduce((s: number, a: any) => s + Number(a.amount_paid || 0), 0);
+
+      // Customers count
+      const { count: totalCustomers } = await supabase
+        .from('customers')
+        .select('id', { count: 'exact', head: true });
+
       return {
         totalTenants: tenants.length,
-        activeTenants: tenants.filter(t => t.status === TenantStatus.ACTIVE).length,
-        mrr: tenants.reduce((acc, t) => acc + (t.monthlyFee || 0), 0),
-        globalVolume: 0
+        activeTenants: active.length,
+        mrr: active.reduce((acc, t) => acc + (t.monthlyFee || 0), 0),
+        globalVolume: grossBilling,
+        totalAppts,
+        newThisMonth,
+        totalCustomers: totalCustomers || 0,
+        byStatus: Object.fromEntries(
+          Object.values(TenantStatus).map(s => [s, tenants.filter(t => t.status === s).length])
+        ),
       };
     } catch (err) {
       console.error("Error getting global stats:", err);
-      return { totalTenants: 0, activeTenants: 0, mrr: 0, globalVolume: 0 };
+      return {
+        totalTenants: 0, activeTenants: 0, mrr: 0, globalVolume: 0,
+        totalAppts: 0, newThisMonth: 0, totalCustomers: 0, byStatus: {}
+      };
     }
   }
 
@@ -820,6 +872,43 @@ class DatabaseService {
 
   async getCoverImage(_tenantId: string): Promise<string> { return ''; }
   async setCoverImage(_tenantId: string, _url: string) {}
+
+  // ─── INVENTORY ──────────────────────────────────────────────────────
+
+  async getInventory(tenantId: string): Promise<InventoryItem[]> {
+    const s = await this.getSettings(tenantId);
+    return s.inventory || [];
+  }
+
+  async addInventoryItem(tenantId: string, item: Omit<InventoryItem, 'id' | 'lastUpdated'>): Promise<InventoryItem> {
+    const s = await this.getSettings(tenantId);
+    const newItem: InventoryItem = { ...item, id: generateId(), lastUpdated: new Date().toISOString() };
+    await this.updateSettings(tenantId, { inventory: [...(s.inventory || []), newItem] });
+    return newItem;
+  }
+
+  async updateInventoryItem(tenantId: string, id: string, updates: Partial<InventoryItem>): Promise<void> {
+    const s = await this.getSettings(tenantId);
+    const updated = (s.inventory || []).map(i =>
+      i.id === id ? { ...i, ...updates, lastUpdated: new Date().toISOString() } : i
+    );
+    await this.updateSettings(tenantId, { inventory: updated });
+  }
+
+  async deleteInventoryItem(tenantId: string, id: string): Promise<void> {
+    const s = await this.getSettings(tenantId);
+    await this.updateSettings(tenantId, { inventory: (s.inventory || []).filter(i => i.id !== id) });
+  }
+
+  async addStockEntry(tenantId: string, id: string, qty: number, cost: number): Promise<void> {
+    const s = await this.getSettings(tenantId);
+    const updated = (s.inventory || []).map(i =>
+      i.id === id
+        ? { ...i, quantity: i.quantity + qty, purchaseCost: cost, lastUpdated: new Date().toISOString() }
+        : i
+    );
+    await this.updateSettings(tenantId, { inventory: updated });
+  }
 }
 
 export const db = new DatabaseService();
