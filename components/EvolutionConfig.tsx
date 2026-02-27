@@ -55,11 +55,11 @@ const EvolutionConfig: React.FC<{ tenantId: string; tenantSlug?: string }> = ({ 
 
   const handleConnect = useCallback(async (forceReset: boolean = false) => {
     if (loading) return;
-    
+
     setLoading(true);
     setError(null);
     setQrCode(null);
-    
+
     try {
       const name = await refreshInstanceInfo();
       if (!name) {
@@ -67,8 +67,11 @@ const EvolutionConfig: React.FC<{ tenantId: string; tenantSlug?: string }> = ({ 
       }
 
       if (forceReset) {
-        addLog('INFO', `Deletando instância antiga ${name} para reset...`);
-        await evolutionService.deleteInstance(name);
+        // Use logout (not delete) — just clears the WhatsApp session without
+        // destroying the instance. Deleting + recreating triggers WhatsApp
+        // anti-spam and causes "impossível conectar" errors on the phone.
+        addLog('INFO', `Encerrando sessão WhatsApp de ${name}...`);
+        await evolutionService.logoutInstance(name);
         await new Promise(r => setTimeout(r, 3000));
       }
 
@@ -198,10 +201,11 @@ const EvolutionConfig: React.FC<{ tenantId: string; tenantSlug?: string }> = ({ 
             )}
 
             <button
-              onClick={() => { if(confirm("Isso apagará a instância atual e criará uma nova. Deseja continuar?")) handleConnect(true); }}
-              className="w-full bg-white text-slate-300 py-3 rounded-2xl font-black text-[9px] uppercase tracking-widest hover:text-red-500 hover:border-red-100 transition-all border-2 border-slate-50"
+              disabled={loading}
+              onClick={() => { if(confirm("Isso encerrará a sessão WhatsApp atual e gerará um novo QR Code. Deseja continuar?")) handleConnect(true); }}
+              className="w-full bg-white text-slate-300 py-3 rounded-2xl font-black text-[9px] uppercase tracking-widest hover:text-red-500 hover:border-red-100 transition-all border-2 border-slate-50 disabled:opacity-30 disabled:cursor-not-allowed"
             >
-              Reiniciar Instância (Limpeza Total)
+              {loading ? 'AGUARDE...' : 'Reiniciar Instância (Nova Sessão)'}
             </button>
           </div>
 
