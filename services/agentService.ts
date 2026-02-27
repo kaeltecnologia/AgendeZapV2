@@ -134,7 +134,7 @@ function detectIntent(text: string, step: ConversationStep): Intent {
   const lower = text.toLowerCase().trim();
 
   // Restart / cancel already handled upstream, but kept here too
-  const RESTART = ['cancelar', 'sair', 'reiniciar', 'recomeçar', 'recomecar', 'esquece', 'esquecer', 'restart', 'voltar ao início', 'voltar ao inicio'];
+  const RESTART = ['cancelar', 'cancela', 'cancele', 'cancelamento', 'sair', 'reiniciar', 'recomeçar', 'recomecar', 'esquece', 'esquecer', 'restart', 'voltar ao início', 'voltar ao inicio'];
   if (RESTART.some(k => lower.includes(k))) return 'RESTART';
 
   const BACK = ['voltar', 'volta', 'anterior', 'mudar escolha', 'alterar escolha', 'mudar de opção', 'quero mudar'];
@@ -562,6 +562,39 @@ function quickTime(text: string, availableSlots: string[]): string | null {
 }
 
 // =====================================================================
+// DEDUPLICATION — two-layer system
+//
+//  Layer 1 (local):  in-process Map — instant, zero network cost.
+//                    Catches duplicates within the same tab/process.
+//
+//  Layer 2 (global): Supabase msg_dedup table with PRIMARY KEY.
+//                    Atomic across ALL browser tabs and external servers.
+//                    Required SQL (run once in Supabase SQL Editor):
+//                      CREATE TABLE IF NOT EXISTS msg_dedup (
+//                        fp text PRIMARY KEY,
+//                        ts timestamptz DEFAULT now()
+//                      );
+// =====================================================================
+
+const _recentHandled = new Map<string, number>(); // fingerprint → timestamp ms
+
+function makeFingerprint(tenantId: string, phone: string, text: string): string {
+  return `${tenantId}::${phone}::${text.trim().slice(0, 120)}`;
+}
+
+// Returns true if this fingerprint was already seen in THIS process within 60s.
+function isLocalDuplicate(fp: string): boolean {
+  const now = Date.now();
+  const last = _recentHandled.get(fp);
+  if (last !== undefined && now - last < 60_000) return true;
+  _recentHandled.set(fp, now);
+  for (const [k, t] of _recentHandled) {
+    if (now - t > 120_000) _recentHandled.delete(k);
+  }
+  return false;
+}
+
+// =====================================================================
 // MAIN HANDLER
 // =====================================================================
 
@@ -578,12 +611,74 @@ export async function handleMessage(
   const text = messageText.trim();
   if (!text) return null;
 
-  // ─── Reset keywords ───────────────────────────────────────────────
-  const RESET_KEYWORDS = ['cancelar', 'sair', 'reiniciar', 'recomeçar', 'recomecar', 'esquece', 'esquecer', 'restart', 'voltar ao início', 'voltar ao inicio'];
-  if (RESET_KEYWORDS.some(k => text.toLowerCase().includes(k))) {
+  // ─── Cancellation / Reset — checked BEFORE dedup so it always fires ─
+  // (the external webhook might process duplicates; we still want this to work)
+  const lowerText = text.toLowerCase();
+  const CANCEL_KEYWORDS = ['cancelar', 'cancela', 'cancele', 'cancelamento'];
+  const RESET_KEYWORDS  = ['sair', 'reiniciar', 'recomeçar', 'recomecar', 'esquece', 'esquecer', 'restart', 'voltar ao início', 'voltar ao inicio'];
+  const isCancellation  = CANCEL_KEYWORDS.some(k => lowerText.includes(k));
+  const isReset         = RESET_KEYWORDS.some(k => lowerText.includes(k));
+
+  if (isCancellation || isReset) {
     clearSession(tenantId, phone);
+
+    if (isCancellation) {
+      // Try to find and cancel the customer's next upcoming confirmed appointment
+      try {
+        const { data: customer } = await supabase
+          .from('customers')
+          .select('id')
+          .eq('tenant_id', tenantId)
+          .eq('telefone', phone)
+          .maybeSingle();
+
+        if (customer) {
+          // Use local time string (appointments store local time, not UTC)
+          const now = new Date();
+          const pad = (n: number) => String(n).padStart(2, '0');
+          const nowLocal = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+
+          const { data: appts } = await supabase
+            .from('appointments')
+            .select('id, inicio')
+            .eq('tenant_id', tenantId)
+            .eq('customer_id', customer.id)
+            .eq('status', AppointmentStatus.CONFIRMED)
+            .gte('inicio', nowLocal)
+            .order('inicio', { ascending: true })
+            .limit(1);
+
+          if (appts && appts.length > 0) {
+            await supabase
+              .from('appointments')
+              .update({ status: AppointmentStatus.CANCELLED })
+              .eq('id', appts[0].id);
+
+            const dateStr = (appts[0].inicio as string).substring(0, 10);
+            const dateFormatted = new Date(dateStr + 'T12:00:00').toLocaleDateString('pt-BR', {
+              weekday: 'long', day: '2-digit', month: '2-digit',
+            });
+            return `✅ Seu agendamento de *${dateFormatted}* foi cancelado com sucesso.\n\nSempre que precisar, estamos aqui! 😊`;
+          }
+        }
+      } catch (e) {
+        console.error('[Agent] Erro ao cancelar agendamento:', e);
+      }
+      return `Certo! Se tiver algum agendamento, entre em contato diretamente com a gente para cancelar. 😊`;
+    }
+
     return `Tudo bem! Quando quiser agendar, é só me chamar. 😊\n\nDigite qualquer coisa para começar.`;
   }
+
+  // ─── Dedup layer 1: local fast-path (same process/tab) ──────────
+  const fp = makeFingerprint(tenantId, phone, text);
+  if (isLocalDuplicate(fp)) return null;
+
+  // ─── Dedup layer 2: cross-process atomic Supabase claim ──────────
+  // Only one tab/server can INSERT the same fingerprint (PRIMARY KEY).
+  // If this returns false, another process already owns this message.
+  const claimed = await db.claimMessage(fp);
+  if (!claimed) return null;
 
   const [professionals, services, settings] = await Promise.all([
     db.getProfessionals(tenantId),

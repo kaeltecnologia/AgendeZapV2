@@ -116,20 +116,65 @@ export const evolutionService = {
     }
   },
 
-  async createAndFetchQr(instanceName: string): Promise<any> {
-    if (!instanceName) return { status: 'error', message: 'Nome da instância inválido.' };
+  // Checks if an instance already exists in Evolution API.
+  // Handles both v1 ({ instanceName }) and v2 ({ instance: { instanceName } }) response formats.
+  async instanceExists(instanceName: string): Promise<boolean> {
     try {
-      const statusResponse = await fetch(`${EVOLUTION_API_URL}/instance/fetchInstances?instanceName=${instanceName}`, {
+      const res = await fetch(`${EVOLUTION_API_URL}/instance/fetchInstances?instanceName=${instanceName}`, {
         method: 'GET',
         headers
       });
-      let instanceExists = false;
-      if (statusResponse.ok) {
-        const instances = await statusResponse.json();
-        instanceExists = Array.isArray(instances) ? instances.some((i: any) => i.instanceName === instanceName) : false;
+      if (!res.ok) return false;
+      const data = await res.json();
+      const list: any[] = Array.isArray(data) ? data : [];
+      return list.some(
+        (i: any) =>
+          i.instanceName === instanceName ||
+          i.instance?.instanceName === instanceName ||
+          i.name === instanceName
+      );
+    } catch {
+      return false;
+    }
+  },
+
+  // Restarts an existing (disconnected) instance so we can get a fresh QR code.
+  async restartInstance(instanceName: string): Promise<boolean> {
+    try {
+      // Evolution API v2: PUT /instance/restart/{name}
+      const res = await fetch(`${EVOLUTION_API_URL}/instance/restart/${instanceName}`, {
+        method: 'PUT',
+        headers
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  },
+
+  // Connects (or reconnects) to get a QR code.
+  // Strategy:
+  //   1. If instance already exists → restart it to clear old WA session → get QR
+  //   2. If instance does not exist → create it → get QR
+  //   3. If already open → return success immediately
+  async createAndFetchQr(instanceName: string): Promise<any> {
+    if (!instanceName) return { status: 'error', message: 'Nome da instância inválido.' };
+    try {
+      // ── Step 1: check current connection state first (fast path)
+      const currentStatus = await this.checkStatus(instanceName);
+      if (currentStatus === 'open') {
+        return { status: 'success', qrcode: null, message: 'Conectado.' };
       }
 
-      if (!instanceExists) {
+      // ── Step 2: check existence
+      const exists = await this.instanceExists(instanceName);
+
+      if (exists) {
+        // Instance exists but is disconnected → restart to get a fresh QR code
+        await this.restartInstance(instanceName);
+        await this.sleep(2000);
+      } else {
+        // Instance doesn't exist → create it
         const createRes = await fetch(`${EVOLUTION_API_URL}/instance/create`, {
           method: 'POST',
           headers,
@@ -140,14 +185,15 @@ export const evolutionService = {
             integration: "WHATSAPP-BAILEYS"
           })
         });
+        // 409 = already exists (race condition) — safe to continue
         if (!createRes.ok && createRes.status !== 409) {
-          const errData = await createRes.json();
+          const errData = await createRes.json().catch(() => ({}));
           throw new Error(errData.message || "Erro ao criar instância no servidor Evolution.");
         }
+        await this.sleep(1500);
       }
 
-      await this.sleep(1500);
-
+      // ── Step 3: request QR code / connection
       const connectResponse = await fetch(`${EVOLUTION_API_URL}/instance/connect/${instanceName}`, {
         method: 'GET',
         headers
@@ -172,22 +218,53 @@ export const evolutionService = {
     }
   },
 
+  // NOTE: setWebhook intentionally calls disableWebhook — the external webhook server
+  // must NEVER be re-registered. Frontend polling is the sole message processor.
   async setWebhook(instanceName: string): Promise<boolean> {
+    return this.disableWebhook(instanceName);
+  },
+
+  // Disables the external webhook so only frontend polling processes messages.
+  // Tries EVERY known Evolution API endpoint variant (v1, v2, forks) to guarantee
+  // the webhook is cleared regardless of which API version is running.
+  async disableWebhook(instanceName: string): Promise<boolean> {
     if (!instanceName) return false;
+
+    // Use the Evolution API's own base URL as the noop webhook target.
+    // Requests hit the same server, return a quick non-200 at /noop, and are
+    // discarded — no external server ever receives or processes the message.
+    const noopUrl = `${EVOLUTION_API_URL}/noop-disabled`;
+    const body = JSON.stringify({
+      url: noopUrl,
+      enabled: false,
+      webhook_by_events: false,
+      events: []
+    });
+
+    const tries: Promise<any>[] = [
+      // v1 / v2: POST set with enabled:false
+      fetch(`${EVOLUTION_API_URL}/webhook/set/${instanceName}`, { method: 'POST', headers, body }).catch(() => null),
+      // Some forks: DELETE on /webhook/{name}
+      fetch(`${EVOLUTION_API_URL}/webhook/${instanceName}`, { method: 'DELETE', headers }).catch(() => null),
+      // Some forks: DELETE on /webhook/set/{name}
+      fetch(`${EVOLUTION_API_URL}/webhook/set/${instanceName}`, { method: 'DELETE', headers }).catch(() => null),
+    ];
+
+    await Promise.allSettled(tries);
+
+    // Verify: read back the configured webhook and warn if still enabled
     try {
-      const response = await fetch(`${EVOLUTION_API_URL}/webhook/set/${instanceName}`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          url: "https://agendezap-api-handler.xzftjp.easypanel.host/webhook",
-          enabled: true,
-          webhook_by_events: false,
-          events: ["MESSAGES_UPSERT", "CONNECTION_UPDATE"]
-        })
-      });
-      return response.ok;
-    } catch (e) {
-      return false;
-    }
+      const check = await fetch(`${EVOLUTION_API_URL}/webhook/find/${instanceName}`, { method: 'GET', headers });
+      if (check.ok) {
+        const cfg = await check.json().catch(() => ({}));
+        const enabled = cfg?.webhook?.enabled ?? cfg?.enabled;
+        const url: string = cfg?.webhook?.url ?? cfg?.url ?? '';
+        if (enabled === true && url.includes('agendezap-api-handler')) {
+          console.warn('[evolutionService] disableWebhook: webhook still enabled after attempts — Evolution API may be restoring it on reconnect.');
+        }
+      }
+    } catch { /* ignore — just a verification step */ }
+
+    return true;
   }
 };

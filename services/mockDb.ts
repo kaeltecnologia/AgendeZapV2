@@ -643,7 +643,11 @@ class DatabaseService {
           professionalMeta: fu._professionalMeta || {},
           customerData: fu._customerData || {},
           followUpSent: fu._followUpSent || {},
-          inventory: fu._inventory || []
+          inventory: fu._inventory || [],
+          aiLeadActive: fu._aiLeadActive !== false,
+          aiProfessionalActive: !!fu._aiProfessionalActive,
+          systemPrompt: fu._systemPrompt || '',
+          agentName: fu._agentName || ''
         };
       }
     } catch (e) {
@@ -671,7 +675,11 @@ class DatabaseService {
         _professionalMeta: newS.professionalMeta ?? curr.professionalMeta ?? {},
         _customerData: newS.customerData ?? curr.customerData ?? {},
         _followUpSent: newS.followUpSent ?? curr.followUpSent ?? {},
-        _inventory: newS.inventory ?? curr.inventory ?? []
+        _inventory: newS.inventory ?? curr.inventory ?? [],
+        _aiLeadActive: newS.aiLeadActive ?? curr.aiLeadActive ?? true,
+        _aiProfessionalActive: newS.aiProfessionalActive ?? curr.aiProfessionalActive ?? false,
+        _systemPrompt: newS.systemPrompt ?? curr.systemPrompt ?? '',
+        _agentName: newS.agentName ?? curr.agentName ?? ''
       };
 
       const { error } = await supabase.from('tenant_settings').upsert(
@@ -845,7 +853,8 @@ class DatabaseService {
         amount: Number(e.amount),
         category: e.category,
         professional_id: e.professional_id,
-        date: e.date
+        date: e.date,
+        paymentMethod: e.payment_method || undefined
       }));
     } catch (err) {
       console.error("Error fetching expenses:", err);
@@ -861,7 +870,8 @@ class DatabaseService {
         amount: exp.amount,
         category: exp.category,
         professional_id: exp.professional_id,
-        date: exp.date || new Date().toISOString()
+        date: exp.date || new Date().toISOString(),
+        payment_method: exp.paymentMethod || null
       });
       if (error) throw error;
     } catch (e) {
@@ -908,6 +918,31 @@ class DatabaseService {
         : i
     );
     await this.updateSettings(tenantId, { inventory: updated });
+  }
+
+  // ── Cross-process message deduplication ───────────────────────────
+  // Uses the msg_dedup table (PRIMARY KEY = fingerprint) for atomic claims.
+  // Only ONE process/tab/server can successfully INSERT a given fingerprint.
+  // Returns true  → this caller claimed the message (should process it).
+  // Returns false → another process already claimed it (skip processing).
+  // Fails open: if the table doesn't exist or any unexpected error occurs,
+  // returns true so the message is still processed (avoids silent drops).
+  //
+  // Required SQL (run once in Supabase SQL Editor):
+  //   CREATE TABLE IF NOT EXISTS msg_dedup (fp text PRIMARY KEY, ts timestamptz DEFAULT now());
+  async claimMessage(fp: string): Promise<boolean> {
+    try {
+      const { error } = await supabase.from('msg_dedup').insert({ fp });
+      if (error?.code === '23505') return false; // unique violation — already claimed
+      if (error) return true; // table missing or other error — fail open
+      // Fire-and-forget: prune entries older than 2 minutes to keep the table small
+      void Promise.resolve(
+        supabase.from('msg_dedup').delete().lt('ts', new Date(Date.now() - 120_000).toISOString())
+      ).catch(() => {});
+      return true;
+    } catch {
+      return true; // unexpected error — fail open
+    }
   }
 }
 

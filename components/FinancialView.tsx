@@ -12,6 +12,7 @@ const FinancialView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
   const [expAmount, setExpAmount] = useState(0);
   const [expCategory, setExpCategory] = useState<'COMPANY' | 'PROFESSIONAL'>('COMPANY');
   const [expProfId, setExpProfId] = useState('');
+  const [expPaymentMethod, setExpPaymentMethod] = useState<PaymentMethod>(PaymentMethod.MONEY);
 
   const [professionals, setProfessionals] = useState<Professional[]>([]);
   const [summary, setSummary] = useState<any>(null);
@@ -45,10 +46,11 @@ const FinancialView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
   const handleAddExpense = async () => {
     if (!expDesc || expAmount <= 0) return;
     await db.addExpense({
-      tenant_id: tenantId, description: expDesc, amount: expAmount, 
+      tenant_id: tenantId, description: expDesc, amount: expAmount,
       category: expCategory, professional_id: expCategory === 'PROFESSIONAL' ? expProfId : undefined,
-      date: new Date().toISOString()
+      date: new Date().toISOString(), paymentMethod: expPaymentMethod
     });
+    setExpDesc(''); setExpAmount(0); setExpCategory('COMPANY'); setExpProfId(''); setExpPaymentMethod(PaymentMethod.MONEY);
     setShowExpModal(false);
     loadData();
   };
@@ -134,6 +136,8 @@ const FinancialView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
                       <p className="font-black text-black leading-tight">{e.description}</p>
                       <p className="text-[9px] font-bold text-slate-400 tracking-widest uppercase mt-1">
                         {e.category === 'COMPANY' ? '🏢 Unidade' : `👤 Prof: ${professionals.find(p=>p.id===e.professional_id)?.name}`}
+                        {e.paymentMethod && <span className="ml-2 text-slate-300">·</span>}
+                        {e.paymentMethod && <span className="ml-2">{e.paymentMethod === 'DINHEIRO' ? '💵' : e.paymentMethod === 'PIX' ? '📱' : '💳'} {e.paymentMethod}</span>}
                       </p>
                     </td>
                     <td className="px-8 py-6 text-right font-black text-black text-lg">R$ {e.amount.toFixed(2)}</td>
@@ -162,6 +166,22 @@ const FinancialView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
                   {professionals.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
               )}
+              <div>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Método de Pagamento</p>
+                <div className="grid grid-cols-2 gap-3">
+                  {([
+                    { val: PaymentMethod.MONEY, icon: '💵', label: 'Dinheiro' },
+                    { val: PaymentMethod.PIX,   icon: '📱', label: 'PIX' },
+                    { val: PaymentMethod.DEBIT, icon: '💳', label: 'Débito' },
+                    { val: PaymentMethod.CREDIT,icon: '💳', label: 'Crédito' },
+                  ] as const).map(({ val, icon, label }) => (
+                    <button key={val} type="button" onClick={() => setExpPaymentMethod(val)}
+                      className={`py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest border-2 transition-all ${expPaymentMethod === val ? 'bg-black text-white border-black' : 'bg-slate-50 text-slate-400 border-slate-100 hover:border-slate-400'}`}>
+                      {icon} {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
             <div className="flex gap-4">
               <button onClick={()=>setShowExpModal(false)} className="flex-1 py-4 font-black text-slate-400 uppercase text-xs tracking-widest">Fechar</button>

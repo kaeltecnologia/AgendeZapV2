@@ -23,12 +23,17 @@ const Toggle = ({ checked, onChange, label, description }: {
   </div>
 );
 
+const DEFAULT_PROMPT = 'Você é o assistente oficial da Barbearia. Use um tom amigável, moderno e focado na conversão de agendamentos. Pergunte o que o cliente deseja e guie-o até a confirmação de horário, profissional e serviço.';
+const DEFAULT_AGENT_NAME = 'Agente Inteligente AgendeZap';
+
 const AiAgentConfig: React.FC<{ tenantId: string }> = ({ tenantId }) => {
   const [active, setActive] = useState(false);
   const [aiLeadActive, setAiLeadActive] = useState(true);
   const [aiProfessionalActive, setAiProfessionalActive] = useState(false);
-  const [loadingWebhook, setLoadingWebhook] = useState(false);
+  const [systemPrompt, setSystemPrompt] = useState(DEFAULT_PROMPT);
+  const [agentName, setAgentName] = useState(DEFAULT_AGENT_NAME);
   const [loadingSettings, setLoadingSettings] = useState(true);
+  const [savingPrompt, setSavingPrompt] = useState(false);
   const [slug, setSlug] = useState('');
 
   useEffect(() => {
@@ -39,8 +44,10 @@ const AiAgentConfig: React.FC<{ tenantId: string }> = ({ tenantId }) => {
 
       const settings = await db.getSettings(tenantId);
       setActive(settings.aiActive);
-      setAiLeadActive(settings.aiLeadActive !== false); // default true
+      setAiLeadActive(settings.aiLeadActive !== false);
       setAiProfessionalActive(!!settings.aiProfessionalActive);
+      setSystemPrompt(settings.systemPrompt || DEFAULT_PROMPT);
+      setAgentName(settings.agentName || DEFAULT_AGENT_NAME);
       setLoadingSettings(false);
     };
     load();
@@ -50,14 +57,10 @@ const AiAgentConfig: React.FC<{ tenantId: string }> = ({ tenantId }) => {
     const newState = !active;
     setActive(newState);
     await db.updateSettings(tenantId, { aiActive: newState });
-
-    if (newState && slug) {
-      setLoadingWebhook(true);
-      const instanceName = evolutionService.getInstanceName(slug);
-      const ok = await evolutionService.setWebhook(instanceName);
-      if (ok) alert(`Inteligência Artificial ativada para instância: ${instanceName}`);
-      setLoadingWebhook(false);
-    }
+    // NOTE: we do NOT call setWebhook here. The frontend polling (AiPollingManager)
+    // is the sole message processor. Enabling the external webhook would cause
+    // duplicate responses since both the webhook server and polling would handle
+    // every incoming message independently.
   };
 
   const handleToggleLead = async (val: boolean) => {
@@ -68,6 +71,12 @@ const AiAgentConfig: React.FC<{ tenantId: string }> = ({ tenantId }) => {
   const handleToggleProfessional = async (val: boolean) => {
     setAiProfessionalActive(val);
     await db.updateSettings(tenantId, { aiProfessionalActive: val });
+  };
+
+  const handleSavePrompt = async () => {
+    setSavingPrompt(true);
+    await db.updateSettings(tenantId, { systemPrompt, agentName });
+    setSavingPrompt(false);
   };
 
   if (loadingSettings) return <div className="p-20 text-center font-black animate-pulse">CARREGANDO CONFIGURAÇÕES...</div>;
@@ -91,12 +100,11 @@ const AiAgentConfig: React.FC<{ tenantId: string }> = ({ tenantId }) => {
             </p>
             <button
               onClick={toggleAi}
-              disabled={loadingWebhook}
               className={`w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all ${
                 active ? 'bg-black text-white hover:bg-red-500' : 'bg-orange-500 text-white shadow-xl shadow-orange-100'
               }`}
             >
-              {loadingWebhook ? 'CONFIGURANDO...' : active ? 'Desligar Agente' : 'Ativar Sistema'}
+              {active ? 'Desligar Agente' : 'Ativar Sistema'}
             </button>
           </div>
 
@@ -125,15 +133,16 @@ const AiAgentConfig: React.FC<{ tenantId: string }> = ({ tenantId }) => {
         <div className="flex-1 bg-white p-12 rounded-[50px] border-2 border-slate-100 shadow-xl shadow-slate-100/50 space-y-10">
           <div className="space-y-3">
             <label className="text-[10px] font-black text-black uppercase tracking-[0.2em] ml-2">Personalidade do Atendente</label>
-            <input defaultValue="Agente Inteligente AgendeZap" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-[24px] outline-none font-black text-sm uppercase tracking-tight focus:border-orange-500 transition-all" />
+            <input value={agentName} onChange={e => setAgentName(e.target.value)} className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-[24px] outline-none font-black text-sm uppercase tracking-tight focus:border-orange-500 transition-all" />
           </div>
 
           <div className="space-y-3">
             <label className="text-[10px] font-black text-black uppercase tracking-[0.2em] ml-2">Contexto e Comportamento (System Prompt)</label>
             <textarea
               rows={10}
+              value={systemPrompt}
+              onChange={e => setSystemPrompt(e.target.value)}
               className="w-full p-8 bg-slate-50 border-2 border-slate-100 rounded-[30px] outline-none focus:border-orange-500 transition-all text-sm font-bold leading-relaxed text-black"
-              defaultValue={`Você é o assistente oficial da Barbearia. Use um tom amigável, moderno e focado na conversão de agendamentos. Pergunte o que o cliente deseja e guie-o até a confirmação de horário, profissional e serviço.`}
             />
             <div className="bg-orange-50 p-6 rounded-2xl flex items-start space-x-4 border-l-4 border-orange-500">
                <span className="text-xl">💡</span>
@@ -144,8 +153,8 @@ const AiAgentConfig: React.FC<{ tenantId: string }> = ({ tenantId }) => {
           </div>
 
           <div className="flex justify-end pt-4">
-            <button className="bg-black text-white px-12 py-5 rounded-[24px] font-black text-xs uppercase tracking-[0.2em] shadow-xl hover:bg-orange-500 transition-all">
-              Salvar IA
+            <button onClick={handleSavePrompt} disabled={savingPrompt} className="bg-black text-white px-12 py-5 rounded-[24px] font-black text-xs uppercase tracking-[0.2em] shadow-xl hover:bg-orange-500 transition-all disabled:opacity-50">
+              {savingPrompt ? 'Salvando...' : 'Salvar IA'}
             </button>
           </div>
         </div>

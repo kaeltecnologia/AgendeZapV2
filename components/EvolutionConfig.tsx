@@ -72,10 +72,15 @@ const EvolutionConfig: React.FC<{ tenantId: string; tenantSlug?: string }> = ({ 
         await new Promise(r => setTimeout(r, 3000));
       }
 
-      addLog('INFO', `Iniciando criação da instância: ${name}`);
+      addLog('INFO', `Conectando instância: ${name}`);
       const result = await evolutionService.createAndFetchQr(name);
-      
+
       if (result.status === 'success') {
+        // Always disable the external webhook right after connect/restart,
+        // since Evolution API may restore the previously configured webhook URL.
+        evolutionService.disableWebhook(name).catch(() => {});
+        addLog('INFO', 'Webhook externo desativado — usando polling local.');
+
         if (result.qrcode) {
           setQrCode(result.qrcode);
           setInstanceStatus('connecting');
@@ -98,11 +103,21 @@ const EvolutionConfig: React.FC<{ tenantId: string; tenantSlug?: string }> = ({ 
 
   useEffect(() => {
     let mounted = true;
+    let lastStatus = '';
+
     const check = async () => {
       const name = await refreshInstanceInfo();
       if (!name || !mounted) return;
       const status = await evolutionService.checkStatus(name);
-      if (mounted) setInstanceStatus(status);
+      if (!mounted) return;
+      setInstanceStatus(status);
+
+      // When connection (re)opens, immediately disable the external webhook.
+      // Evolution API may restore a previously configured webhook URL on reconnect.
+      if (status === 'open' && lastStatus !== 'open') {
+        evolutionService.disableWebhook(name).catch(() => {});
+      }
+      lastStatus = status;
     };
 
     check();

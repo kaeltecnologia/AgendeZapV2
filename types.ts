@@ -126,6 +126,10 @@ export interface TenantSettings {
   }>;
   followUpSent?: Record<string, string>; // tracks sent messages e.g. "aviso::apptId" → "YYYY-MM-DD"
   inventory?: InventoryItem[];           // product stock list
+  aiLeadActive?: boolean;               // IA para Leads toggle
+  aiProfessionalActive?: boolean;       // Assessor do Profissional toggle
+  systemPrompt?: string;                // AI agent system prompt
+  agentName?: string;                   // AI agent personality name
 }
 
 export interface Appointment {
@@ -153,6 +157,7 @@ export interface Expense {
   category: 'COMPANY' | 'PROFESSIONAL';
   professional_id?: string;
   date: string;
+  paymentMethod?: PaymentMethod;
 }
 
 export enum SessionStatus {
