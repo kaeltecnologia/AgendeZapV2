@@ -57,6 +57,157 @@ function clearHistory(tenantId: string, phone: string): void {
   conversationHistory.delete(historyKey(tenantId, phone));
 }
 
+// ─── Audio transcription ──────────────────────────────────────────────
+export async function fetchAudioBase64(
+  instanceName: string,
+  msg: any
+): Promise<{ base64: string; mimeType: string } | null> {
+  try {
+    const res = await fetch(
+      `${EVOLUTION_API_URL}/chat/getBase64FromMediaMessage/${instanceName}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'apikey': EVOLUTION_API_KEY },
+        // Evolution API expects the FULL message record (key + message + messageType, etc.)
+        body: JSON.stringify({ message: msg, convertToMp4: false }),
+      }
+    );
+    if (!res.ok) {
+      console.warn('[fetchAudioBase64] HTTP', res.status, res.statusText);
+      return null;
+    }
+    const data = await res.json();
+    const base64: string = data.base64 || data.data || '';
+    const mimeType: string = (data.mimetype || data.mimeType || 'audio/ogg')
+      .split(';')[0]
+      .trim();
+    if (!base64) {
+      console.warn('[fetchAudioBase64] Resposta OK mas sem base64:', JSON.stringify(data).substring(0, 200));
+      return null;
+    }
+    return { base64, mimeType };
+  } catch (e: any) {
+    console.error('[fetchAudioBase64] Erro:', e.message);
+    return null;
+  }
+}
+
+// ── Whisper transcription (OpenAI) ───────────────────────────────────
+async function _transcribeWithWhisper(
+  apiKey: string,
+  base64: string,
+  mimeType: string
+): Promise<string | null> {
+  try {
+    // Convert base64 → Blob → FormData (Whisper requires multipart upload)
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('webm') ? 'webm' : 'ogg';
+    const blob = new Blob([bytes], { type: mimeType });
+
+    const form = new FormData();
+    form.append('file', blob, `audio.${ext}`);
+    form.append('model', 'whisper-1');
+    form.append('language', 'pt');
+
+    const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}` },
+      body: form,
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      console.warn(`[transcribeAudio] Whisper HTTP ${res.status}:`, errText.substring(0, 300));
+      return null;
+    }
+    const data = await res.json();
+    return data.text?.trim() || null;
+  } catch (e: any) {
+    console.error('[transcribeAudio] Whisper erro:', e.message);
+    return null;
+  }
+}
+
+// ── Gemini transcription ──────────────────────────────────────────────
+async function _callGeminiTranscribe(
+  apiKey: string,
+  base64: string,
+  normalizedMime: string,
+  model: string
+): Promise<{ ok: boolean; status: number; text: string | null; rateLimited: boolean }> {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{
+        role: 'user',
+        parts: [
+          { text: 'Transcreva exatamente o que foi dito neste áudio em português brasileiro. Retorne APENAS a transcrição, sem explicações ou formatação extra.' },
+          { inline_data: { mime_type: normalizedMime, data: base64 } }
+        ]
+      }]
+    })
+  });
+  if (res.status === 429) return { ok: false, status: 429, text: null, rateLimited: true };
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    console.warn(`[transcribeAudio] HTTP ${res.status} (${model}):`, errText.substring(0, 300));
+    return { ok: false, status: res.status, text: null, rateLimited: false };
+  }
+  const data = await res.json();
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || null;
+  return { ok: true, status: 200, text, rateLimited: false };
+}
+
+async function _transcribeWithGemini(
+  apiKey: string,
+  base64: string,
+  mimeType: string
+): Promise<string | null> {
+  // WhatsApp sends audio/ogg (Opus codec) — Gemini needs the codec hint
+  const normalizedMime = mimeType === 'audio/ogg' ? 'audio/ogg; codecs=opus' : mimeType;
+  const models = ['gemini-2.0-flash', 'gemini-2.0-flash-lite'];
+
+  for (const model of models) {
+    let attempt = await _callGeminiTranscribe(apiKey, base64, normalizedMime, model);
+    if (attempt.ok) return attempt.text;
+
+    if (attempt.rateLimited) {
+      console.warn(`[transcribeAudio] 429 em ${model} — aguardando 5s...`);
+      await new Promise(r => setTimeout(r, 5000));
+      attempt = await _callGeminiTranscribe(apiKey, base64, normalizedMime, model);
+      if (attempt.ok) return attempt.text;
+      console.warn(`[transcribeAudio] Ainda 429 em ${model} — tentando próximo modelo...`);
+      continue;
+    }
+    break; // non-recoverable error
+  }
+  return null;
+}
+
+export async function transcribeAudio(
+  apiKey: string,
+  base64: string,
+  mimeType: string
+): Promise<string | null> {
+  try {
+    // Route by key type: sk-... = OpenAI Whisper; AIza... = Gemini
+    if (apiKey.startsWith('sk-')) {
+      console.log('[transcribeAudio] Usando OpenAI Whisper');
+      return await _transcribeWithWhisper(apiKey, base64, mimeType);
+    } else {
+      console.log('[transcribeAudio] Usando Gemini');
+      return await _transcribeWithGemini(apiKey, base64, mimeType);
+    }
+  } catch (e: any) {
+    console.error('[transcribeAudio] Erro:', e.message);
+    return null;
+  }
+}
+
 // ─── Phone extractor ──────────────────────────────────────────────────
 function extrairNumero(msg: any): string | null {
   const candidatos = [
@@ -84,11 +235,45 @@ function extrairNumero(msg: any): string | null {
 
 // ─── Main message processor ───────────────────────────────────────────
 export async function processarMensagem(tenant: any, msg: any) {
-  const text = (
+  let text = (
     msg.message?.conversation ||
     msg.message?.extendedTextMessage?.text ||
     msg.body || msg.text || ''
   ).trim();
+
+  // ── Audio transcription ───────────────────────────────────────────────
+  const msgType = msg.messageType || msg.type || '';
+  const isAudio =
+    ['audioMessage', 'pttMessage'].includes(msgType) ||
+    !!msg.message?.audioMessage ||
+    !!msg.message?.pttMessage;
+
+  if (!text && isAudio) {
+    const geminiKey: string = tenant.gemini_api_key || '';
+    if (geminiKey) {
+      log('INFO', 'Áudio recebido — transcrevendo com Gemini...');
+      const audio = await fetchAudioBase64(tenant.evolution_instance, msg);
+      if (audio) {
+        const transcribed = await transcribeAudio(geminiKey, audio.base64, audio.mimeType);
+        if (transcribed) {
+          text = transcribed;
+          log('INFO', `Transcrição: "${transcribed.substring(0, 80)}"`);
+        }
+      }
+    }
+    if (!text) {
+      const numeroFallback = extrairNumero(msg);
+      if (numeroFallback) {
+        await evolutionService.sendMessage(
+          tenant.evolution_instance,
+          numeroFallback,
+          'Opa! Não consegui entender o áudio 🎧 Pode digitar sua mensagem?'
+        );
+        log('ERROR', 'Falha ao transcrever áudio — pedido para redigitar');
+      }
+      return;
+    }
+  }
 
   if (!text) return;
 
@@ -207,7 +392,7 @@ Situação: cliente mudou de ideia ("na verdade quero com o felipe")
     ];
 
     const response = await ai.models.generateContent({
-      model: 'gemini-1.5-flash',
+      model: 'gemini-2.0-flash',
       contents,
       config: {
         systemInstruction: systemPrompt,

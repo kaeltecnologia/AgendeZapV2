@@ -261,7 +261,7 @@ const EstoqueView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
             ) : filtered.map(item => {
               const isLow = !!(item.minStock && item.quantity <= item.minStock);
               return (
-                <tr key={item.id} className={`hover:bg-slate-50 transition-colors ${isLow ? 'bg-amber-50/40' : ''}`}>
+                <tr key={item.id} className={`hover:bg-orange-50 transition-colors ${isLow ? 'bg-amber-50/40' : ''}`}>
                   <td className="px-5 py-4">
                     <p className="font-black text-sm text-black">{item.name}</p>
                     {isLow && <span className="text-[8px] font-black text-amber-600 uppercase">⚠️ Estoque baixo</span>}

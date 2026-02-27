@@ -179,9 +179,12 @@ const AiAgentConfig: React.FC<{ tenantId: string }> = ({ tenantId }) => {
           {/* API Key section */}
           <div className="space-y-4 border-t-2 border-slate-50 pt-8">
             <div>
-              <label className="text-[10px] font-black text-black uppercase tracking-[0.2em] ml-2">OpenAI API Key (GPT-4o Mini)</label>
+              <label className="text-[10px] font-black text-black uppercase tracking-[0.2em] ml-2">Chave de API (Gemini ou OpenAI)</label>
               <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-2 mt-0.5">
-                Cole sua chave da OpenAI para usar GPT-4o Mini. Deixe vazio para manter Gemini Flash.
+                🔑 Chave Gemini (AIza...): obtenha grátis em <span className="text-orange-500">aistudio.google.com</span> — necessária para transcrição de áudio e IA avançada.
+              </p>
+              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-2 mt-0.5">
+                🔑 Chave OpenAI (sk-...): use GPT-4o Mini em vez do Gemini.
               </p>
             </div>
             <div className="relative">
@@ -189,7 +192,7 @@ const AiAgentConfig: React.FC<{ tenantId: string }> = ({ tenantId }) => {
                 type="password"
                 value={openaiApiKey}
                 onChange={e => setOpenaiApiKey(e.target.value)}
-                placeholder="sk-proj-..."
+                placeholder="AIza... (Gemini) ou sk-proj-... (OpenAI)"
                 className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-[24px] outline-none font-mono text-sm focus:border-emerald-500 transition-all pr-32"
               />
               <span className={`absolute right-4 top-1/2 -translate-y-1/2 text-[9px] font-black uppercase px-3 py-1.5 rounded-xl ${
@@ -205,6 +208,31 @@ const AiAgentConfig: React.FC<{ tenantId: string }> = ({ tenantId }) => {
                 </p>
               </div>
             )}
+          </div>
+
+          {/* 24/7 Webhook status */}
+          <div className="space-y-3 border-t-2 border-slate-50 pt-8">
+            <div>
+              <label className="text-[10px] font-black text-black uppercase tracking-[0.2em] ml-2">Operação 24/7 — Webhook Ativo</label>
+              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-2 mt-0.5">
+                O agente responde mensagens mesmo com o navegador fechado. A URL abaixo é registrada automaticamente na Evolution API ao ativar o sistema.
+              </p>
+            </div>
+            <div className="flex items-center gap-3 bg-emerald-50 border-2 border-emerald-200 rounded-[20px] p-4">
+              <span className="text-lg">🟢</span>
+              <div className="flex-1 min-w-0">
+                <p className="text-[9px] font-black text-emerald-800 uppercase tracking-wider">Edge Function (Supabase)</p>
+                <p className="text-[10px] font-mono text-emerald-700 break-all mt-0.5">
+                  https://cnnfnqrnjckntnxdgwae.supabase.co/functions/v1/whatsapp-webhook
+                </p>
+              </div>
+              <button
+                onClick={() => navigator.clipboard?.writeText('https://cnnfnqrnjckntnxdgwae.supabase.co/functions/v1/whatsapp-webhook')}
+                className="shrink-0 text-[9px] font-black bg-emerald-500 text-white px-3 py-2 rounded-xl uppercase tracking-wide hover:bg-emerald-600 transition-all"
+              >
+                Copiar
+              </button>
+            </div>
           </div>
 
           <div className="flex justify-end pt-4">

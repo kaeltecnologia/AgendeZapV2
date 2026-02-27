@@ -345,7 +345,7 @@ const AppointmentsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
                     const isAI = a.source === BookingSource.AI;
                     const isPlan = a.isPlan || a.source === BookingSource.PLAN;
                     return (
-                      <tr key={a.id} className="hover:bg-slate-50 transition-colors">
+                      <tr key={a.id} className="hover:bg-orange-50 transition-colors">
                         <td className="px-8 py-6">
                           <div className="flex flex-col gap-1">
                             <span className="text-xs font-black text-slate-400 uppercase">{appDate.toLocaleDateString('pt-BR')}</span>

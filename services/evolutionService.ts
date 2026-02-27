@@ -1,4 +1,3 @@
-import { db } from './mockDb';
 
 export const EVOLUTION_API_URL = "https://evolution-api-agendezap-evolution-api.xzftjp.easypanel.host";
 export const EVOLUTION_API_KEY = "429683C4C977415CAAFCCE10F7D57E11";
@@ -216,6 +215,22 @@ export const evolutionService = {
     } catch (e: any) {
       return { status: 'error', message: e.message || 'Erro inesperado na Evolution API.' };
     }
+  },
+
+  // Enables the Edge Function webhook so Evolution API posts messages to it 24/7.
+  async enableWebhook(instanceName: string, webhookUrl: string): Promise<boolean> {
+    if (!instanceName || !webhookUrl) return false;
+    const body = JSON.stringify({
+      url: webhookUrl,
+      enabled: true,
+      webhook_by_events: false,
+      webhook_base64: true,  // include audio base64 in payload
+      events: ['MESSAGES_UPSERT', 'messages.upsert']
+    });
+    try {
+      await fetch(`${EVOLUTION_API_URL}/webhook/set/${instanceName}`, { method: 'POST', headers, body });
+    } catch { /* ignore */ }
+    return true;
   },
 
   // NOTE: setWebhook intentionally calls disableWebhook — the external webhook server

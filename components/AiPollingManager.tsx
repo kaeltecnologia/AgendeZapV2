@@ -5,6 +5,7 @@ import { supabase } from '../services/supabase';
 import { handleMessage } from '../services/agentService';
 import { handleProfessionalMessage } from '../services/professionalAgentService';
 import { runFollowUp } from '../services/followUpService';
+import { fetchAudioBase64, transcribeAudio } from '../services/pollingService';
 
 // ── Module-level singletons — survive component remounts ──────────────
 // useRef resets every time the component unmounts/remounts (e.g. tab navigation).
@@ -14,10 +15,44 @@ const _processedIds = new Set<string>();
 const _sessionStart = Math.floor(Date.now() / 1000);
 let _isBusy = false;
 
+// ── Persistent dedup via localStorage ────────────────────────────────
+// IDs marked as processed are persisted for 30 min so page reloads and
+// multiple-tab restarts never re-process the same message.
+const _LS_KEY = 'agz_pid';
+const _LS_TTL = 30 * 60 * 1000; // 30 minutes
+
+function _loadPersistedIds(): void {
+  try {
+    const raw = localStorage.getItem(_LS_KEY);
+    if (!raw) return;
+    const items: Array<[string, number]> = JSON.parse(raw);
+    const cutoff = Date.now() - _LS_TTL;
+    for (const [id, ts] of items) {
+      if (ts > cutoff) _processedIds.add(id);
+    }
+  } catch { /* ignore parse errors */ }
+}
+
+function _persistId(id: string): void {
+  _processedIds.add(id);
+  try {
+    const raw = localStorage.getItem(_LS_KEY);
+    const items: Array<[string, number]> = raw ? JSON.parse(raw) : [];
+    const cutoff = Date.now() - _LS_TTL;
+    const fresh = items.filter(([, ts]) => ts > cutoff);
+    fresh.push([id, Date.now()]);
+    localStorage.setItem(_LS_KEY, JSON.stringify(fresh.slice(-500)));
+  } catch { /* ignore storage errors */ }
+}
+
+// Populate _processedIds from localStorage on module load
+_loadPersistedIds();
+
 // ── Message buffer — accumulate messages per phone, only process
 // after N seconds of silence from that number (configurable via settings)
 const _lastMsgTime = new Map<string, number>();       // phone → timestamp of last seen msg
-const _pendingMsgs  = new Map<string, any[]>();        // phone → accumulated msgs (most-recent wins)
+const _pendingMsgs  = new Map<string, any[]>();        // phone → accumulated text msgs (most-recent wins)
+const _pendingAudio = new Map<string, any[]>();        // phone → audio msgs (bypass silence buffer)
 
 // ── Cross-tab dedup via BroadcastChannel ─────────────────────────────
 // When one tab marks a message as processed, all other tabs learn immediately
@@ -76,11 +111,53 @@ function extrairNumero(msg: any): string | null {
   return null;
 }
 
-async function processarMensagem(tenant: any, msg: any) {
-  const text = msg.message?.conversation
-    || msg.message?.extendedTextMessage?.text
-    || msg.body || msg.text || '';
-  if (!text.trim()) return;
+async function processarMensagem(tenant: any, msg: any, settings?: any) {
+  let text = (
+    msg.message?.conversation ||
+    msg.message?.extendedTextMessage?.text ||
+    msg.body || msg.text || ''
+  ).trim();
+
+  // ── Audio transcription ──────────────────────────────────────────────
+  let audioReceived = false;
+  if (!text) {
+    const msgType = msg.messageType || msg.type || '';
+    const isAudio =
+      ['audioMessage', 'pttMessage'].includes(msgType) ||
+      !!msg.message?.audioMessage ||
+      !!msg.message?.pttMessage;
+    if (isAudio) {
+      audioReceived = true;
+      // Use the same key resolution as agentService: settings.openaiApiKey first, then tenant column
+      const geminiKey: string = (settings?.openaiApiKey || '').trim() || tenant.gemini_api_key || '';
+      console.log('[AiPolling] Áudio detectado. geminiKey presente:', !!geminiKey, '| msgType:', msgType);
+      if (geminiKey) {
+        const instanceName = tenant.evolution_instance || evolutionService.getInstanceName(tenant.slug);
+        console.log('[AiPolling] Buscando base64 do áudio — instância:', instanceName);
+        const audio = await fetchAudioBase64(instanceName, msg);
+        console.log('[AiPolling] fetchAudioBase64 retornou:', audio ? `mimeType=${audio.mimeType}, base64len=${audio.base64.length}` : 'null');
+        if (audio) {
+          const transcribed = await transcribeAudio(geminiKey, audio.base64, audio.mimeType);
+          console.log('[AiPolling] Transcrição:', transcribed ?? 'null');
+          if (transcribed) text = transcribed;
+        }
+      } else {
+        console.warn('[AiPolling] Chave Gemini não configurada — áudio ignorado');
+      }
+    }
+  }
+
+  // If audio was received but transcription failed, send a friendly fallback
+  if (!text && audioReceived) {
+    const cleanPhone = extrairNumero(msg);
+    if (cleanPhone) {
+      const instanceName = tenant.evolution_instance || evolutionService.getInstanceName(tenant.slug);
+      await evolutionService.sendMessage(instanceName, cleanPhone, 'Recebi seu áudio! 🎵 Poderia digitar sua mensagem para eu entender melhor? 😊');
+    }
+    return;
+  }
+
+  if (!text) return;
 
   const cleanPhone = extrairNumero(msg);
   if (!cleanPhone) return;
@@ -126,8 +203,9 @@ async function poll(tenantId: string) {
       const msgId = msg.key?.id;
       if (!msgId || _processedIds.has(msgId)) continue;
 
-      // Mark processed immediately to prevent any concurrent re-processing
-      _processedIds.add(msgId);
+      // Mark processed immediately — persists to localStorage so page reloads
+      // and other tabs never reprocess this message ID.
+      _persistId(msgId);
       broadcastProcessed(msgId); // tell all other tabs right away
 
       const msgTimestamp = msg.messageTimestamp || msg.timestamp || 0;
@@ -147,17 +225,38 @@ async function poll(tenantId: string) {
       if (!phone) continue;
 
       const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || msg.content || msg.text || '';
-      if (!text || !text.trim()) continue;
+      const msgType = msg.messageType || msg.type || '';
+      const isAudio = ['audioMessage', 'pttMessage'].includes(msgType) || !!msg.message?.audioMessage || !!msg.message?.pttMessage;
 
-      // Push into buffer and refresh silence timer
-      if (!_pendingMsgs.has(phone)) _pendingMsgs.set(phone, []);
-      _pendingMsgs.get(phone)!.push(msg);
-      _lastMsgTime.set(phone, now);
-      broadcastPending(phone); // tell other tabs this phone has pending msgs
+      if (isAudio) {
+        // Audio bypasses the silence buffer — processed on the very next poll cycle (≤ 4 s)
+        console.log('[AiPolling] Phase1: áudio enfileirado para', phone, '| msgType:', msgType);
+        if (!_pendingAudio.has(phone)) _pendingAudio.set(phone, []);
+        _pendingAudio.get(phone)!.push(msg);
+      } else if (text.trim()) {
+        // Text message goes into the silence buffer
+        if (!_pendingMsgs.has(phone)) _pendingMsgs.set(phone, []);
+        _pendingMsgs.get(phone)!.push(msg);
+        _lastMsgTime.set(phone, now);
+        broadcastPending(phone); // tell other tabs this phone has pending msgs
+      }
     }
 
-    // ── Phase 2: for each phone whose buffer has been silent long enough,
-    //            process the LAST (most recent) accumulated message ──────
+    // ── Phase 2a: process audio messages immediately (no silence buffer) ──
+    for (const [phone, audioMsgs] of Array.from(_pendingAudio.entries())) {
+      _pendingAudio.delete(phone);
+      // Process each audio in order (usually just one)
+      for (const audioMsg of audioMsgs) {
+        try {
+          await processarMensagem(tenant, audioMsg, settings);
+        } catch (e: any) {
+          console.error('[AiPolling] Áudio:', e.message);
+        }
+      }
+    }
+
+    // ── Phase 2b: for each phone whose text buffer has been silent long enough,
+    //             process the LAST (most recent) accumulated text message ──────
     const bufferMs = (settings.msgBufferSecs ?? 30) * 1_000;
     for (const [phone, msgs] of Array.from(_pendingMsgs.entries())) {
       const lastTime = _lastMsgTime.get(phone) ?? 0;
@@ -170,7 +269,7 @@ async function poll(tenantId: string) {
       // Only respond to the most-recent message (it carries the full intent)
       const lastMsg = msgs[msgs.length - 1];
       try {
-        await processarMensagem(tenant, lastMsg);
+        await processarMensagem(tenant, lastMsg, settings);
       } catch (e: any) {
         console.error('[AiPolling] Processamento:', e.message);
       }
@@ -184,11 +283,14 @@ async function poll(tenantId: string) {
 
 const AiPollingManager: React.FC<{ tenantId: string }> = ({ tenantId }) => {
 
-  // ── Disable external webhook (on mount + every 10 s to prevent re-activation) ─
+  // ── Activate Edge Function webhook for 24/7 operation ────────────────
+  // Runs on mount and every 5 min to re-register if Evolution API resets it.
   useEffect(() => {
     if (!tenantId) return;
 
-    const disableWh = async () => {
+    const WEBHOOK_URL = 'https://cnnfnqrnjckntnxdgwae.supabase.co/functions/v1/whatsapp-webhook';
+
+    const activateWebhook = async () => {
       try {
         const settings = await db.getSettings(tenantId);
         if (!settings.aiActive) return;
@@ -196,12 +298,12 @@ const AiPollingManager: React.FC<{ tenantId: string }> = ({ tenantId }) => {
         const tenant = (tenants || []).find((t: any) => t.id === tenantId || t.slug === tenantId);
         if (!tenant) return;
         const instanceName = tenant.evolution_instance || evolutionService.getInstanceName(tenant.slug);
-        if (instanceName) await evolutionService.disableWebhook(instanceName);
+        if (instanceName) await evolutionService.enableWebhook(instanceName, WEBHOOK_URL);
       } catch (e) { /* silent */ }
     };
 
-    disableWh();
-    const interval = setInterval(disableWh, 10000); // retry every 10 s — must beat Evolution API webhook restore
+    activateWebhook();
+    const interval = setInterval(activateWebhook, 5 * 60 * 1000); // re-register every 5 min
     return () => clearInterval(interval);
   }, [tenantId]);
 

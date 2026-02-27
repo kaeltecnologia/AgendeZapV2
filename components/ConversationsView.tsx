@@ -11,6 +11,7 @@ interface ConvMessage {
   text: string;
   timestamp: number;
   fromMe: boolean;
+  isAudio?: boolean;
 }
 
 interface Conversation {
@@ -108,7 +109,14 @@ const ConversationsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
           msg.message?.conversation ||
           msg.message?.extendedTextMessage?.text ||
           msg.body || msg.text || '';
-        if (!text.trim()) continue;
+
+        const msgType = msg.messageType || msg.type || '';
+        const isAudio =
+          ['audioMessage', 'pttMessage'].includes(msgType) ||
+          !!msg.message?.audioMessage ||
+          !!msg.message?.pttMessage;
+
+        if (!text.trim() && !isAudio) continue;
 
         const ts = msg.messageTimestamp || 0;
         const fromMe = !!msg.key?.fromMe;
@@ -117,9 +125,11 @@ const ConversationsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
         const matchedProf = professionals.find((p: any) => phonesMatch(p.phone || '', phone));
         const matchedCust = custs.find(c => phonesMatch(c.phone, phone));
 
+        const displayText = text.trim() || (isAudio ? '🎵 Áudio' : '');
+
         const newMsg: ConvMessage = {
           id: msg.key?.id || `${phone}-${ts}`,
-          phone, pushName, text, timestamp: ts, fromMe,
+          phone, pushName, text: displayText, timestamp: ts, fromMe, isAudio: isAudio && !text.trim(),
         };
 
         const existing = convMap.get(phone);
@@ -387,7 +397,14 @@ const ConversationsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
                                 ? 'bg-orange-500 text-white rounded-br-sm'
                                 : 'bg-white text-black border border-slate-100 rounded-bl-sm'
                             }`}>
-                              <p className="whitespace-pre-wrap leading-relaxed break-words">{msg.text}</p>
+                              {msg.isAudio ? (
+                                <div className="flex items-center gap-2 py-0.5">
+                                  <span className="text-base">🎵</span>
+                                  <span className={`text-[10px] font-black uppercase tracking-widest ${msg.fromMe ? 'text-orange-100' : 'text-slate-400'}`}>Áudio</span>
+                                </div>
+                              ) : (
+                                <p className="whitespace-pre-wrap leading-relaxed break-words">{msg.text}</p>
+                              )}
                               <p className={`text-[9px] mt-1 text-right font-bold ${msg.fromMe ? 'text-orange-200' : 'text-slate-400'}`}>
                                 {formatTime(msg.timestamp)}
                               </p>

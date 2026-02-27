@@ -106,7 +106,7 @@ const FinancialView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
               </thead>
               <tbody className="divide-y-2 divide-slate-50">
                 {revenuesList.map(a => (
-                  <tr key={a.id} className="hover:bg-slate-50 transition-colors">
+                  <tr key={a.id} className="hover:bg-orange-50 transition-colors">
                     <td className="px-8 py-6">
                       <p className="font-black text-black leading-tight">Atendimento {professionals.find(p=>p.id===a.professional_id)?.name}</p>
                       <p className="text-[9px] font-bold text-slate-400 tracking-widest uppercase mt-1">📅 {new Date(a.startTime).toLocaleDateString('pt-BR')} | {a.paymentMethod}</p>
@@ -131,7 +131,7 @@ const FinancialView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
               </thead>
               <tbody className="divide-y-2 divide-slate-50">
                 {expensesList.map(e => (
-                  <tr key={e.id} className="hover:bg-slate-50 transition-colors">
+                  <tr key={e.id} className="hover:bg-orange-50 transition-colors">
                     <td className="px-8 py-6">
                       <p className="font-black text-black leading-tight">{e.description}</p>
                       <p className="text-[9px] font-bold text-slate-400 tracking-widest uppercase mt-1">
