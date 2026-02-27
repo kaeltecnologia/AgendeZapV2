@@ -1,7 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
 import { db } from '../services/mockDb';
-import { evolutionService } from '../services/evolutionService';
 
 const Toggle = ({ checked, onChange, label, description }: {
   checked: boolean;
@@ -32,22 +31,21 @@ const AiAgentConfig: React.FC<{ tenantId: string }> = ({ tenantId }) => {
   const [aiProfessionalActive, setAiProfessionalActive] = useState(false);
   const [systemPrompt, setSystemPrompt] = useState(DEFAULT_PROMPT);
   const [agentName, setAgentName] = useState(DEFAULT_AGENT_NAME);
+  const [openaiApiKey, setOpenaiApiKey] = useState('');
+  const [msgBufferSecs, setMsgBufferSecs] = useState(30);
   const [loadingSettings, setLoadingSettings] = useState(true);
   const [savingPrompt, setSavingPrompt] = useState(false);
-  const [slug, setSlug] = useState('');
 
   useEffect(() => {
     const load = async () => {
-      const tenants = await db.getAllTenants();
-      const myTenant = tenants.find(t => t.id === tenantId);
-      if (myTenant) setSlug(myTenant.slug);
-
       const settings = await db.getSettings(tenantId);
       setActive(settings.aiActive);
       setAiLeadActive(settings.aiLeadActive !== false);
       setAiProfessionalActive(!!settings.aiProfessionalActive);
       setSystemPrompt(settings.systemPrompt || DEFAULT_PROMPT);
       setAgentName(settings.agentName || DEFAULT_AGENT_NAME);
+      setOpenaiApiKey(settings.openaiApiKey || '');
+      setMsgBufferSecs(settings.msgBufferSecs ?? 30);
       setLoadingSettings(false);
     };
     load();
@@ -57,10 +55,6 @@ const AiAgentConfig: React.FC<{ tenantId: string }> = ({ tenantId }) => {
     const newState = !active;
     setActive(newState);
     await db.updateSettings(tenantId, { aiActive: newState });
-    // NOTE: we do NOT call setWebhook here. The frontend polling (AiPollingManager)
-    // is the sole message processor. Enabling the external webhook would cause
-    // duplicate responses since both the webhook server and polling would handle
-    // every incoming message independently.
   };
 
   const handleToggleLead = async (val: boolean) => {
@@ -75,17 +69,25 @@ const AiAgentConfig: React.FC<{ tenantId: string }> = ({ tenantId }) => {
 
   const handleSavePrompt = async () => {
     setSavingPrompt(true);
-    await db.updateSettings(tenantId, { systemPrompt, agentName });
+    await db.updateSettings(tenantId, { systemPrompt, agentName, openaiApiKey, msgBufferSecs });
     setSavingPrompt(false);
   };
 
   if (loadingSettings) return <div className="p-20 text-center font-black animate-pulse">CARREGANDO CONFIGURAÇÕES...</div>;
 
+  const usingOpenAI = openaiApiKey.trim().startsWith('sk-');
+
   return (
     <div className="space-y-10 animate-fadeIn">
       <div>
-        <h1 className="text-3xl font-black text-black uppercase tracking-tight">Agente Gemini AI</h1>
-        <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Configurações de inteligência artificial</p>
+        <h1 className="text-3xl font-black text-black uppercase tracking-tight">Agente IA</h1>
+        <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">
+          Configurações de inteligência artificial
+          {usingOpenAI
+            ? <span className="ml-2 bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full text-[9px] font-black uppercase">GPT-4o Mini</span>
+            : <span className="ml-2 bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full text-[9px] font-black uppercase">Gemini Flash</span>
+          }
+        </p>
       </div>
 
       <div className="flex flex-col lg:flex-row gap-10">
@@ -127,9 +129,37 @@ const AiAgentConfig: React.FC<{ tenantId: string }> = ({ tenantId }) => {
               <p className="text-[9px] font-black text-slate-300 uppercase tracking-widest text-center pt-2">Ative o sistema acima para os modos funcionarem</p>
             )}
           </div>
+
+          {/* Buffer configurável */}
+          <div className="bg-white p-8 rounded-[32px] border-2 border-slate-100 shadow-xl shadow-slate-100/50 space-y-5">
+            <div>
+              <h3 className="font-black text-black text-xs uppercase tracking-widest">Buffer de Mensagens</h3>
+              <p className="text-[10px] font-bold text-slate-400 mt-0.5">Aguarda este tempo de silêncio antes de responder</p>
+            </div>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black text-slate-400 uppercase">Espera</span>
+                <span className="text-2xl font-black text-orange-500">{msgBufferSecs}s</span>
+              </div>
+              <input
+                type="range"
+                min={5}
+                max={120}
+                step={5}
+                value={msgBufferSecs}
+                onChange={e => setMsgBufferSecs(Number(e.target.value))}
+                className="w-full accent-orange-500"
+              />
+              <div className="flex justify-between text-[9px] font-black text-slate-300 uppercase">
+                <span>5s</span>
+                <span>Rápido ←→ Paciente</span>
+                <span>120s</span>
+              </div>
+            </div>
+          </div>
         </div>
 
-        {/* ─── Right column: prompt config ─── */}
+        {/* ─── Right column: prompt + API key config ─── */}
         <div className="flex-1 bg-white p-12 rounded-[50px] border-2 border-slate-100 shadow-xl shadow-slate-100/50 space-y-10">
           <div className="space-y-3">
             <label className="text-[10px] font-black text-black uppercase tracking-[0.2em] ml-2">Personalidade do Atendente</label>
@@ -139,17 +169,42 @@ const AiAgentConfig: React.FC<{ tenantId: string }> = ({ tenantId }) => {
           <div className="space-y-3">
             <label className="text-[10px] font-black text-black uppercase tracking-[0.2em] ml-2">Contexto e Comportamento (System Prompt)</label>
             <textarea
-              rows={10}
+              rows={8}
               value={systemPrompt}
               onChange={e => setSystemPrompt(e.target.value)}
               className="w-full p-8 bg-slate-50 border-2 border-slate-100 rounded-[30px] outline-none focus:border-orange-500 transition-all text-sm font-bold leading-relaxed text-black"
             />
-            <div className="bg-orange-50 p-6 rounded-2xl flex items-start space-x-4 border-l-4 border-orange-500">
-               <span className="text-xl">💡</span>
-               <p className="text-[10px] font-black uppercase text-orange-800 leading-normal tracking-wider">
-                 DICA: O Webhook está configurado para a sua instância específica. Toda mensagem recebida lá será processada por este prompt.
-               </p>
+          </div>
+
+          {/* API Key section */}
+          <div className="space-y-4 border-t-2 border-slate-50 pt-8">
+            <div>
+              <label className="text-[10px] font-black text-black uppercase tracking-[0.2em] ml-2">OpenAI API Key (GPT-4o Mini)</label>
+              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-2 mt-0.5">
+                Cole sua chave da OpenAI para usar GPT-4o Mini. Deixe vazio para manter Gemini Flash.
+              </p>
             </div>
+            <div className="relative">
+              <input
+                type="password"
+                value={openaiApiKey}
+                onChange={e => setOpenaiApiKey(e.target.value)}
+                placeholder="sk-proj-..."
+                className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-[24px] outline-none font-mono text-sm focus:border-emerald-500 transition-all pr-32"
+              />
+              <span className={`absolute right-4 top-1/2 -translate-y-1/2 text-[9px] font-black uppercase px-3 py-1.5 rounded-xl ${
+                usingOpenAI ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-400'
+              }`}>
+                {usingOpenAI ? '✓ GPT-4o Mini' : 'Gemini Flash'}
+              </span>
+            </div>
+            {usingOpenAI && (
+              <div className="bg-emerald-50 border-l-4 border-emerald-500 p-4 rounded-2xl">
+                <p className="text-[10px] font-black text-emerald-800 uppercase tracking-wider">
+                  ✓ Usando GPT-4o Mini — conversas mais naturais e precisas
+                </p>
+              </div>
+            )}
           </div>
 
           <div className="flex justify-end pt-4">

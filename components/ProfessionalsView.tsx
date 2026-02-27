@@ -14,7 +14,9 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
   const [pros, setPros] = useState<Professional[]>([]);
   const [allAppointments, setAllAppointments] = useState<Appointment[]>([]);
   const [allExpenses, setAllExpenses] = useState<Expense[]>([]);
+  const [allServices, setAllServices] = useState<{ id: string; name: string }[]>([]);
   const [breaks, setBreaks] = useState<BreakPeriod[]>([]);
+  const [reportTab, setReportTab] = useState<'appointments' | 'expenses'>('appointments');
 
   const [showModal, setShowModal] = useState(false);
   const [editingPro, setEditingPro] = useState<Professional | null>(null);
@@ -41,16 +43,18 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
 
   const load = useCallback(async () => {
     try {
-      const [p, a, e, s] = await Promise.all([
+      const [p, a, e, s, svc] = await Promise.all([
         db.getProfessionals(tenantId),
         db.getAppointments(tenantId),
         db.getExpenses(tenantId),
         db.getBreaks(tenantId),
+        db.getServices(tenantId),
       ]);
       setPros(p);
       setAllAppointments(a);
       setAllExpenses(e);
       setBreaks(s);
+      setAllServices(svc.map(s => ({ id: s.id, name: s.name })));
     } catch (err) {
       console.error('Erro ao carregar dados:', err);
     }
@@ -196,6 +200,7 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
     return {
       total: filteredApps.length, revenue, expenses: totalExpenses, netResult: revenue - totalExpenses,
       appointments: filteredApps.sort((a, b) => b.startTime.localeCompare(a.startTime)),
+      expensesList: filteredExps.sort((a, b) => b.date.localeCompare(a.date)),
     };
   }, [selectedProForReport, startDate, endDate, allAppointments, allExpenses]);
 
@@ -223,7 +228,7 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
           const vac = getVacInfo(p);
           return (
             <div key={p.id} className="bg-white p-8 rounded-[40px] border-2 border-slate-100 shadow-xl shadow-slate-100/50 relative group hover:border-orange-500 transition-all">
-              <div className="flex items-center space-x-5 mb-6 cursor-pointer" onClick={() => setSelectedProForReport(p)}>
+              <div className="flex items-center space-x-5 mb-6 cursor-pointer" onClick={() => { setSelectedProForReport(p); setReportTab('appointments'); }}>
                 <div className="w-16 h-16 bg-black text-white rounded-[24px] flex items-center justify-center text-2xl font-black group-hover:bg-orange-500 transition-all shadow-lg">
                   {p.name[0]}
                 </div>
@@ -263,7 +268,7 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
                     className="text-[9px] font-black text-slate-400 uppercase tracking-widest hover:text-black transition-all">
                     📝 Editar
                   </button>
-                  <button onClick={() => setSelectedProForReport(p)} className="text-[10px] font-black text-orange-500 uppercase tracking-widest hover:tracking-wider transition-all">
+                  <button onClick={() => { setSelectedProForReport(p); setReportTab('appointments'); }} className="text-[10px] font-black text-orange-500 uppercase tracking-widest hover:tracking-wider transition-all">
                     Ver Desempenho →
                   </button>
                 </div>
@@ -388,12 +393,100 @@ const ProfessionalsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
               </div>
             </div>
             <div className="flex-1 overflow-y-auto p-10 space-y-8 bg-slate-50/30 custom-scrollbar">
+              {/* ── Summary cards ── */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
                 <StatCardSmall title="Atendimentos" value={reportData?.total} />
                 <StatCardSmall title="Faturamento Bruto" value={`R$ ${reportData?.revenue.toFixed(2)}`} color="text-orange-500" />
                 <StatCardSmall title="Despesas" value={`R$ ${reportData?.expenses.toFixed(2)}`} />
                 <StatCardSmall title="Lucro Líquido" value={`R$ ${reportData?.netResult.toFixed(2)}`} bg="bg-black text-white" />
               </div>
+
+              {/* ── Tab switcher ── */}
+              <div className="flex bg-slate-100 p-1 rounded-2xl w-fit">
+                <button
+                  onClick={() => setReportTab('appointments')}
+                  className={`px-6 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all ${reportTab === 'appointments' ? 'bg-black text-white shadow-md' : 'text-slate-400 hover:text-black'}`}
+                >
+                  📅 Agendamentos ({reportData?.appointments.length ?? 0})
+                </button>
+                <button
+                  onClick={() => setReportTab('expenses')}
+                  className={`px-6 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all ${reportTab === 'expenses' ? 'bg-black text-white shadow-md' : 'text-slate-400 hover:text-black'}`}
+                >
+                  💸 Despesas ({reportData?.expensesList.length ?? 0})
+                </button>
+              </div>
+
+              {/* ── Appointments list ── */}
+              {reportTab === 'appointments' && (
+                <div className="space-y-3">
+                  {(reportData?.appointments ?? []).length === 0 && (
+                    <p className="text-center text-slate-400 font-black text-xs uppercase py-8">Nenhum agendamento no período</p>
+                  )}
+                  {(reportData?.appointments ?? []).map((a: Appointment) => {
+                    const svcName = allServices.find(s => s.id === a.service_id)?.name ?? '—';
+                    const statusColors: Record<string, string> = {
+                      FINISHED:  'bg-emerald-100 text-emerald-700',
+                      CONFIRMED: 'bg-blue-100 text-blue-700',
+                      CANCELLED: 'bg-red-100 text-red-600',
+                      PENDING:   'bg-amber-100 text-amber-700',
+                    };
+                    const statusLabel: Record<string, string> = {
+                      FINISHED: 'Finalizado', CONFIRMED: 'Confirmado',
+                      CANCELLED: 'Cancelado', PENDING: 'Pendente',
+                    };
+                    const dateStr = new Date(a.startTime).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' });
+                    const timeStr = new Date(a.startTime).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+                    return (
+                      <div key={a.id} className="flex items-center justify-between bg-white rounded-2xl px-6 py-4 border-2 border-slate-100">
+                        <div className="flex items-center gap-4">
+                          <div className="text-center min-w-[52px]">
+                            <p className="text-[10px] font-black text-slate-400 uppercase">{dateStr}</p>
+                            <p className="text-xs font-black text-black">{timeStr}</p>
+                          </div>
+                          <div>
+                            <p className="text-sm font-black text-black">{svcName}</p>
+                            {a.isPlan && <span className="text-[9px] font-black text-purple-600 bg-purple-50 px-2 py-0.5 rounded-full uppercase">Plano</span>}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span className={`text-[9px] font-black px-3 py-1 rounded-full uppercase ${statusColors[a.status] ?? 'bg-slate-100 text-slate-500'}`}>
+                            {statusLabel[a.status] ?? a.status}
+                          </span>
+                          {a.status === 'FINISHED' && (
+                            <span className="text-sm font-black text-emerald-600">R$ {(a.amountPaid ?? 0).toFixed(2)}</span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* ── Expenses list ── */}
+              {reportTab === 'expenses' && (
+                <div className="space-y-3">
+                  {(reportData?.expensesList ?? []).length === 0 && (
+                    <p className="text-center text-slate-400 font-black text-xs uppercase py-8">Nenhuma despesa no período</p>
+                  )}
+                  {(reportData?.expensesList ?? []).map((e: Expense) => (
+                    <div key={e.id} className="flex items-center justify-between bg-white rounded-2xl px-6 py-4 border-2 border-slate-100">
+                      <div className="flex items-center gap-4">
+                        <p className="text-[10px] font-black text-slate-400 uppercase min-w-[52px]">
+                          {new Date(e.date + 'T12:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' })}
+                        </p>
+                        <div>
+                          <p className="text-sm font-black text-black">{e.description}</p>
+                          {e.paymentMethod && (
+                            <p className="text-[9px] font-black text-slate-400 uppercase">{e.paymentMethod}</p>
+                          )}
+                        </div>
+                      </div>
+                      <span className="text-sm font-black text-red-500">- R$ {e.amount.toFixed(2)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>

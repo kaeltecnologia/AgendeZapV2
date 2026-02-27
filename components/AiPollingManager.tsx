@@ -14,9 +14,8 @@ const _processedIds = new Set<string>();
 const _sessionStart = Math.floor(Date.now() / 1000);
 let _isBusy = false;
 
-// ── 30s message buffer — accumulate messages per phone, only process
-// after 30 s of silence from that number ────────────────────────────
-const BUFFER_MS = 30_000;
+// ── Message buffer — accumulate messages per phone, only process
+// after N seconds of silence from that number (configurable via settings)
 const _lastMsgTime = new Map<string, number>();       // phone → timestamp of last seen msg
 const _pendingMsgs  = new Map<string, any[]>();        // phone → accumulated msgs (most-recent wins)
 
@@ -157,11 +156,12 @@ async function poll(tenantId: string) {
       broadcastPending(phone); // tell other tabs this phone has pending msgs
     }
 
-    // ── Phase 2: for each phone whose buffer has been silent for ≥ 30s,
+    // ── Phase 2: for each phone whose buffer has been silent long enough,
     //            process the LAST (most recent) accumulated message ──────
+    const bufferMs = (settings.msgBufferSecs ?? 30) * 1_000;
     for (const [phone, msgs] of Array.from(_pendingMsgs.entries())) {
       const lastTime = _lastMsgTime.get(phone) ?? 0;
-      if (now - lastTime < BUFFER_MS) continue; // still within silence window
+      if (now - lastTime < bufferMs) continue; // still within silence window
 
       // Drain the buffer
       _pendingMsgs.delete(phone);

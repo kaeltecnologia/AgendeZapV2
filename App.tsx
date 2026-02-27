@@ -237,13 +237,13 @@ const App: React.FC = () => {
       {tenantId && <AiPollingManager tenantId={tenantId} />}
 
       {/* Sidebar — scroll interno próprio */}
-      <aside className="w-64 bg-white flex flex-col shrink-0 border-r border-slate-200 z-50 h-screen sticky top-0">
-        <div className="p-8 flex flex-col space-y-2">
-          <h1 className="text-2xl font-black text-black tracking-tighter uppercase italic">AgendeZap</h1>
+      <aside className="w-48 bg-white flex flex-col shrink-0 border-r border-slate-200 z-50 h-screen sticky top-0">
+        <div className="px-5 py-6 flex flex-col space-y-2">
+          <h1 className="text-lg font-black text-black tracking-tighter uppercase italic">AgendeZap</h1>
           {role === 'SUPERADMIN' && <span className="bg-orange-500 text-white text-[8px] font-black px-2 py-0.5 rounded-full w-fit tracking-widest uppercase">SUPER ADMIN</span>}
         </div>
 
-        <nav className="flex-1 px-4 py-2 space-y-1 overflow-y-auto custom-scrollbar">
+        <nav className="flex-1 px-3 py-2 space-y-1 overflow-y-auto custom-scrollbar">
           {role === 'SUPERADMIN' ? (
             <>
               <NavItem active={superAdminTab === 'dashboard'} onClick={() => setSuperAdminTab('dashboard')} icon={<IconDashboard />} label="Dashboard" />
@@ -289,7 +289,7 @@ const App: React.FC = () => {
           </div>
         </nav>
 
-        <div className="p-6 border-t border-slate-100 bg-slate-50/50 space-y-2">
+        <div className="px-4 py-4 border-t border-slate-100 bg-slate-50/50 space-y-2">
           {isImpersonating && (
             <button onClick={handleExitImpersonation} className="flex items-center gap-2 w-full bg-orange-500 text-white px-4 py-2.5 rounded-xl font-black text-[9px] uppercase tracking-widest hover:bg-black transition-all">
               <span>↩</span><span>Sair da conta</span>
@@ -342,9 +342,9 @@ const App: React.FC = () => {
 };
 
 const NavItem = ({ active, onClick, icon, label, color }: any) => (
-  <button onClick={onClick} className={`w-full flex items-center px-4 py-3 rounded-xl transition-all group ${active ? 'bg-black text-white shadow-xl scale-105' : `text-slate-500 hover:bg-slate-100 ${color || ''}`}`}>
-    <span className={`text-xl mr-3 ${active ? 'text-orange-500' : 'text-slate-400 group-hover:text-black'}`}>{icon}</span>
-    <span className={`font-black text-[10px] uppercase tracking-widest ${active ? 'text-white' : ''}`}>{label}</span>
+  <button onClick={onClick} className={`w-full flex items-center px-3 py-2.5 rounded-xl transition-all group ${active ? 'bg-black text-white shadow-xl scale-105' : `text-slate-500 hover:bg-slate-100 ${color || ''}`}`}>
+    <span className={`text-base mr-2 ${active ? 'text-orange-500' : 'text-slate-400 group-hover:text-black'}`}>{icon}</span>
+    <span className={`font-black text-[9px] uppercase tracking-widest truncate ${active ? 'text-white' : ''}`}>{label}</span>
   </button>
 );
 

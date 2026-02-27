@@ -130,6 +130,8 @@ export interface TenantSettings {
   aiProfessionalActive?: boolean;       // Assessor do Profissional toggle
   systemPrompt?: string;                // AI agent system prompt
   agentName?: string;                   // AI agent personality name
+  openaiApiKey?: string;                // OpenAI API key (uses gpt-4o-mini when set)
+  msgBufferSecs?: number;               // message buffer window in seconds (default 30)
 }
 
 export interface Appointment {

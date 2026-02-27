@@ -103,17 +103,34 @@ async function aiExtract<T>(
   history?: HistoryEntry[]
 ): Promise<T | null> {
   if (!apiKey) return null;
+
+  const contextPrefix = history && history.length > 0
+    ? `Histórico recente da conversa:\n${history.slice(-6).map(h => `${h.role === 'user' ? 'Cliente' : 'Agente'}: ${h.text}`).join('\n')}\n\n`
+    : '';
+  const fullPrompt = contextPrefix + prompt;
+
   try {
+    // ── OpenAI gpt-4o-mini (quando a chave começa com "sk-") ────────
+    if (apiKey.startsWith('sk-')) {
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          messages: [{ role: 'user', content: fullPrompt }],
+          response_format: { type: 'json_object' }
+        })
+      });
+      if (!res.ok) throw new Error(`OpenAI HTTP ${res.status}`);
+      const data = await res.json();
+      return JSON.parse(data.choices?.[0]?.message?.content || 'null') as T;
+    }
+
+    // ── Fallback: Google Gemini ──────────────────────────────────────
     const ai = new GoogleGenAI({ apiKey });
-
-    // Prepend recent conversation context so Gemini has full picture
-    const contextPrefix = history && history.length > 0
-      ? `Histórico recente da conversa:\n${history.slice(-6).map(h => `${h.role === 'user' ? 'Cliente' : 'Agente'}: ${h.text}`).join('\n')}\n\n`
-      : '';
-
     const response = await ai.models.generateContent({
       model: 'gemini-1.5-flash',
-      contents: contextPrefix + prompt,
+      contents: fullPrompt,
       config: {
         responseMimeType: 'application/json',
         responseSchema: schema as any,
@@ -121,7 +138,7 @@ async function aiExtract<T>(
     });
     return JSON.parse(response.text || 'null') as T;
   } catch (e) {
-    console.error('[Agent] Gemini extraction error:', e);
+    console.error('[Agent] AI extraction error:', e);
     return null;
   }
 }
@@ -689,6 +706,9 @@ export async function handleMessage(
   const activeProfessionals = professionals.filter(p => p.active).map(p => ({ ...p, name: p.name.trim() }));
   const activeServices = services.filter(s => s.active);
 
+  // Use OpenAI key (gpt-4o-mini) when configured, fall back to Gemini
+  const apiKey = (settings.openaiApiKey || '').trim() || geminiKey;
+
   let session = getSession(tenantId, phone);
 
   // ─── NEW SESSION ──────────────────────────────────────────────────
@@ -765,7 +785,7 @@ export async function handleMessage(
 
     // ── ETAPA 1: Nome ────────────────────────────────────────────────
     case 'WAITING_NAME': {
-      const name = await extractName(text, geminiKey, h);
+      const name = await extractName(text, apiKey, h);
       if (!name) {
         const reply = `Não identifiquei seu nome. Como posso te chamar?`;
         session.history.push({ role: 'bot', text: reply }); saveSession(session); return reply;
@@ -781,7 +801,7 @@ export async function handleMessage(
       if (activeServices.length === 0) return `No momento não há serviços cadastrados. Entre em contato diretamente.`;
 
       const serviceOptions = activeServices.map(s => ({ id: s.id, name: s.name, durationMinutes: s.durationMinutes, price: s.price }));
-      const service = await extractService(text, serviceOptions, geminiKey, h);
+      const service = await extractService(text, serviceOptions, apiKey, h);
       if (!service) {
         const reply = `Não identifiquei o procedimento. Qual desses você gostaria?\n\n${buildServiceList(activeServices)}`;
         session.history.push({ role: 'bot', text: reply }); saveSession(session); return reply;
@@ -812,7 +832,7 @@ export async function handleMessage(
 
       if (!chosenProfSvc) {
         // Multiple professionals, none identified — try to carry date forward before asking
-        const earlyDateSvc = await extractDate(text, geminiKey, h);
+        const earlyDateSvc = await extractDate(text, apiKey, h);
         if (earlyDateSvc) {
           const earlyObj = new Date(earlyDateSvc + 'T12:00:00');
           const todayMidnightE = new Date(); todayMidnightE.setHours(0, 0, 0, 0);
@@ -828,7 +848,7 @@ export async function handleMessage(
       session.data.professionalName = chosenProfSvc.name;
 
       // ─── Flexible: try to extract date (and time) from same message
-      const dateInSvcMsg = await extractDate(text, geminiKey, h);
+      const dateInSvcMsg = await extractDate(text, apiKey, h);
       if (dateInSvcMsg) {
         const dateObjSvc = new Date(dateInSvcMsg + 'T12:00:00');
         const todayMidnightSvc = new Date(); todayMidnightSvc.setHours(0, 0, 0, 0);
@@ -875,7 +895,7 @@ export async function handleMessage(
     // ── ETAPA 3: Barbeiro ─────────────────────────────────────────────
     case 'WAITING_BARBER': {
       const profOptions = activeProfessionals.map(p => ({ id: p.id, name: p.name }));
-      const profResult = await extractProfessional(text, profOptions, geminiKey, h);
+      const profResult = await extractProfessional(text, profOptions, apiKey, h);
       const chosen = profResult === 'NO_PREFERENCE' ? activeProfessionals[0] : profResult;
       session.data.professionalId = chosen.id;
       session.data.professionalName = chosen.name;
@@ -923,7 +943,7 @@ export async function handleMessage(
       }
 
       // ─── Priority 2: try to extract date (and time) from this same message
-      const dateInBarberMsg = await extractDate(text, geminiKey, h);
+      const dateInBarberMsg = await extractDate(text, apiKey, h);
       if (dateInBarberMsg) {
         const dateObjB = new Date(dateInBarberMsg + 'T12:00:00');
         const todayMidnightB = new Date(); todayMidnightB.setHours(0, 0, 0, 0);
@@ -970,7 +990,7 @@ export async function handleMessage(
 
     // ── ETAPA 4: Data ─────────────────────────────────────────────────
     case 'WAITING_DATE': {
-      const dateStr = await extractDate(text, geminiKey, h);
+      const dateStr = await extractDate(text, apiKey, h);
       if (!dateStr) {
         const reply = `Não entendi a data. Pode informar o dia? Ex: "amanhã", "sexta", "15/03".`;
         session.history.push({ role: 'bot', text: reply }); saveSession(session); return reply;
@@ -1090,7 +1110,7 @@ export async function handleMessage(
         session.history.push({ role: 'bot', text: reply }); saveSession(session); return reply;
       }
 
-      const time = await extractTime(text, slots, geminiKey, h);
+      const time = await extractTime(text, slots, apiKey, h);
       if (!time) {
         const reply = `Não identifiquei o horário. Disponíveis:\n\n${formatSlots(slots)}\n\nQual você prefere?`;
         session.history.push({ role: 'bot', text: reply }); saveSession(session); return reply;
@@ -1116,7 +1136,7 @@ export async function handleMessage(
 
     // ── ETAPA 7: Confirmação ──────────────────────────────────────────
     case 'WAITING_CONFIRM': {
-      const confirmed = await checkConfirmation(text, geminiKey, h);
+      const confirmed = await checkConfirmation(text, apiKey, h);
       if (confirmed === null) {
         const reply = `Por favor, confirme com "sim" ou "não". 😊`;
         session.history.push({ role: 'bot', text: reply }); saveSession(session); return reply;
