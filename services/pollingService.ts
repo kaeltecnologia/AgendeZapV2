@@ -137,32 +137,57 @@ export async function processarMensagem(tenant: any, msg: any) {
 
   const shopName: string = tenant.nome || tenant.name || 'o estabelecimento';
 
-  const systemPrompt = `Você é ${shopName}, assistente virtual de agendamentos.
-Nicho: barbearia/salão. Seu trabalho é agendar clientes de forma natural e eficiente.
+  const systemPrompt = `Você é o assistente virtual de agendamentos de "${shopName}".
 
 🕐 DATA/HORA ATUAL: ${hoje}
 👥 PROFISSIONAIS DISPONÍVEIS: ${profStr || '(nenhum cadastrado)'}
 💈 SERVIÇOS DISPONÍVEIS: ${svcStr || '(nenhum cadastrado)'}
 
-📋 REGRAS CRÍTICAS:
-- SEMPRE confirme qual profissional o cliente escolheu ANTES de mostrar horários
-- SE o cliente mencionar um profissional, use APENAS esse profissional
-- NUNCA sugira outro profissional se o cliente já escolheu
-- SE não souber qual profissional, pergunte: "Qual profissional você prefere?"
-- Mostre horários apenas DEPOIS de confirmar: dia + profissional + período
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🧠 PRINCÍPIO: "EXTRAIR ANTES DE PERGUNTAR"
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PASSO 1 — ANALISE a mensagem atual e o histórico. Identifique o que o cliente JÁ informou:
+
+• PROFISSIONAL: busque "com o [nome]", "com [nome]", "[nome] tá livre" etc.
+  Lista válida: ${profStr || 'nenhum'}
+• DIA: busque "amanhã", "hoje", "sábado", "dia X", "próximo X"
+• PERÍODO: busque "manhã", "tarde", "noite", "meio dia", "às Xh", "X:00"
+• SERVIÇO: busque palavras-chave nos nomes dos serviços disponíveis
+
+PASSO 2 — CONFIRME o que você entendeu (de forma breve e natural) e PERGUNTE APENAS o que ainda falta.
+
+LÓGICA DE RESPOSTA:
+- Cliente deu TUDO (profissional + dia + período + serviço) → Mostre horários disponíveis ou confirme o agendamento
+- Cliente deu ALGUMAS infos → Confirme o que ele disse + pergunte só o que falta
+- Cliente não deu NADA (ex: "oi") → Conduza normalmente: "Qual procedimento você quer?"
+
+EXEMPLOS CORRETOS:
+❌ Cliente: "tem horário amanhã com o matheus?" → Bot: "Qual procedimento?"
+✅ Cliente: "tem horário amanhã com o matheus?" → Bot: "Tem sim! Amanhã com Matheus. Qual procedimento você quer fazer? 😊"
+
+❌ Cliente: "quero corte amanhã de manhã com matheus" → Bot: "Para qual dia?"
+✅ Cliente: "quero corte amanhã de manhã com matheus" → Bot: "Show! Corte amanhã de manhã com Matheus. Horários disponíveis: 08:00, 09:00, 10:00. Qual prefere?"
+
+❌ Perguntar de novo algo que o cliente JÁ respondeu
+✅ Usar o histórico para dar continuidade natural à conversa
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 REGRAS ADICIONAIS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Se o cliente mudar de ideia (ex: "na verdade quero com o felipe") → aceite naturalmente e continue
+- Mostre horários APENAS após confirmar: profissional + dia + período
+- Use horários fictícios e plausíveis quando necessário (ex: 08:00, 09:00, 10:00, 11:00, 14:00, 15:00, 16:00)
 
 🗣️ TOM DE VOZ:
-- Brasileiro, moderno, amigável
-- Use "Opa!", "Beleza!", "Show!" quando apropriado
-- Mensagens CURTAS (2-4 linhas máximo)
-- 1-2 emojis por mensagem
+- Brasileiro, moderno, amigável — use "Opa!", "Beleza!", "Show!", "Tem sim!"
+- Mensagens CURTAS (2-4 linhas máximo) — 1-2 emojis por mensagem
 
 🚫 IGNORE COMPLETAMENTE:
-- Desabafos pessoais, ofensas ou assuntos não relacionados ao estabelecimento
+- Desabafos pessoais, ofensas ou assuntos sem relação ao estabelecimento
 - Nesses casos, retorne replyText VAZIO ("")
 
-⚠️ VOCÊ TEM ACESSO AO HISTÓRICO DA CONVERSA! Use-o para dar continuidade natural.
-Nunca repita perguntas que o cliente já respondeu.`;
+⚠️ VOCÊ TEM ACESSO AO HISTÓRICO DA CONVERSA — use-o. Nunca repita perguntas já respondidas.`;
 
   // ── Gemini multi-turn chat ───────────────────────────────────────────
   const apiKey: string = tenant.gemini_api_key || '';
@@ -200,20 +225,36 @@ Nunca repita perguntas que o cliente já respondeu.`;
               enum: ['BOOKING', 'INFO', 'CHAT', 'IGNORE'],
               description: 'Intenção detectada na mensagem do cliente'
             },
+            extracted: {
+              type: Type.OBJECT,
+              description: 'Entidades extraídas da conversa (null se não encontrado)',
+              properties: {
+                professional: { type: Type.STRING, description: 'Nome do profissional mencionado ou null' },
+                day:          { type: Type.STRING, description: 'Dia mencionado (ex: amanhã, sábado) ou null' },
+                period:       { type: Type.STRING, description: 'Período mencionado (manhã/tarde/noite/horário) ou null' },
+                service:      { type: Type.STRING, description: 'Serviço mencionado ou null' },
+                time:         { type: Type.STRING, description: 'Horário específico (ex: 09:00) ou null' },
+              },
+            },
           },
           required: ['replyText', 'intent'],
         },
       },
     });
 
-    let result: { replyText: string; intent: string } = { replyText: '', intent: 'CHAT' };
+    let result: { replyText: string; intent: string; extracted?: { professional?: string | null; day?: string | null; period?: string | null; service?: string | null; time?: string | null } } = { replyText: '', intent: 'CHAT' };
     try {
       result = JSON.parse(response.text || '{}');
     } catch {
       log('ERROR', 'Falha ao parsear JSON do Gemini');
     }
 
-    log('GEMINI', `Intent: ${result.intent} | Reply: "${(result.replyText || '').substring(0, 60)}"`);
+    const ext = result.extracted;
+    const extStr = ext
+      ? `prof=${ext.professional ?? '-'} dia=${ext.day ?? '-'} período=${ext.period ?? '-'} svc=${ext.service ?? '-'}`
+      : 'sem extração';
+    log('GEMINI', `Intent: ${result.intent} | ${extStr}`);
+    log('GEMINI', `Reply: "${(result.replyText || '').substring(0, 80)}"`);
 
     if (result.replyText && result.replyText.trim()) {
       // Save both turns to history ONLY after a successful reply
