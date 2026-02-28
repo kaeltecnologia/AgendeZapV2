@@ -40,6 +40,20 @@ export interface FollowUpConfig {
   fixedTime?: string; // For "Aviso do Dia" (HH:mm)
 }
 
+// One slot in a customer's recurring schedule (e.g. every Tuesday at 15:00)
+export interface RecurringSlot {
+  dayOfWeek: number; // 0=Sunday … 6=Saturday
+  time: string;      // "HH:MM"
+}
+
+// Recurring appointment schedule — attached to a plan customer
+export interface RecurringSchedule {
+  enabled: boolean;
+  professionalId: string;
+  serviceId?: string;       // override plan service if needed
+  slots: RecurringSlot[];   // one or more day/time combinations
+}
+
 // Break / interval period — blocks agent from booking during this window
 export interface BreakPeriod {
   id: string;
@@ -123,6 +137,7 @@ export interface TenantSettings {
     avisoModeId?: string;
     lembreteModeId?: string;
     reativacaoModeId?: string;
+    recurringSchedule?: RecurringSchedule;
   }>;
   followUpSent?: Record<string, string>; // tracks sent messages e.g. "aviso::apptId" → "YYYY-MM-DD"
   inventory?: InventoryItem[];           // product stock list
@@ -177,7 +192,8 @@ export interface Tenant {
   phone?: string;           // owner phone for billing/announcement reminders
   due_day?: number;         // payment due day of month (1-31)
   evolution_instance?: string;
-  plan: 'BASIC' | 'PRO' | 'ENTERPRISE';
+  nicho?: string;           // business niche e.g. 'Barbearia', 'Salão de Beleza'
+  plan: string; // 'START' | 'PROFISSIONAL' | 'ELITE' (legacy: 'BASIC' | 'PRO' | 'ENTERPRISE')
   status: TenantStatus;
   monthlyFee: number;
   createdAt: string;
@@ -219,4 +235,5 @@ export interface Customer {
   reativacaoModeId?: string;  // named reativacao mode id (or 'standard')
   planId?: string | null;     // active plan id
   planServiceId?: string | null; // specific service covered by plan
+  recurringSchedule?: RecurringSchedule; // auto-scheduling config for plan customers
 }

@@ -22,6 +22,9 @@ import AiPollingManager from './components/AiPollingManager';
 import BookingPage from './components/BookingPage';
 import { db } from './services/mockDb';
 import { TenantStatus } from './types';
+import PlanGate from './components/PlanGate';
+import PlanUpgradeModal from './components/PlanUpgradeModal';
+import { hasFeature, FeatureKey } from './config/planConfig';
 
 enum View {
   DASHBOARD = 'DASHBOARD',
@@ -43,7 +46,7 @@ enum View {
 }
 
 type Role = 'TENANT' | 'SUPERADMIN';
-type SuperAdminTab = 'dashboard' | 'clients' | 'avisos' | 'cobranca' | 'logs' | 'sql';
+type SuperAdminTab = 'dashboard' | 'clients' | 'avisos' | 'cobranca' | 'logs' | 'sql' | 'ia' | 'conversas' | 'disparo' | 'prospeccao' | 'suporte';
 
 const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -55,7 +58,13 @@ const App: React.FC = () => {
   const [isReady, setIsReady] = useState(false);
   const [isImpersonating, setIsImpersonating] = useState(false);
   const [superAdminTab, setSuperAdminTab] = useState<SuperAdminTab>('dashboard');
+  const [tenantPlan, setTenantPlan] = useState<string>('START');
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('agz_dark') === '1');
+  const [upgradeModal, setUpgradeModal] = useState<{ feature: FeatureKey } | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // Close sidebar on mobile after any nav action
+  const navTo = (fn: () => void) => () => { fn(); setSidebarOpen(false); };
 
   useEffect(() => {
     if (darkMode) {
@@ -115,6 +124,7 @@ const App: React.FC = () => {
         setTenantId(myTenant.id);
         setTenantSlug(myTenant.slug);
         setTenantName(myTenant.name);
+        setTenantPlan(myTenant.plan || 'START');
         setRole('TENANT');
         setIsAuthenticated(true);
         setCurrentView(View.DASHBOARD);
@@ -152,6 +162,7 @@ const App: React.FC = () => {
         setTenantId(newTenant.id);
         setTenantSlug(newTenant.slug);
         setTenantName(newTenant.name);
+        setTenantPlan(newTenant.plan || 'START');
         setRole('TENANT');
         setIsAuthenticated(true);
         setCurrentView(View.DASHBOARD);
@@ -170,13 +181,22 @@ const App: React.FC = () => {
     setCurrentView(View.DASHBOARD);
   };
 
-  const handleImpersonate = (id: string, name: string, slug: string) => {
+  const handleImpersonate = (id: string, name: string, slug: string, plan?: string) => {
     setTenantId(id);
     setTenantSlug(slug);
     setTenantName(name);
+    setTenantPlan(plan || 'START');
     setRole('TENANT');
     setIsImpersonating(true);
     setCurrentView(View.DASHBOARD);
+  };
+
+  const handleGatedNav = (view: View, feature: FeatureKey) => {
+    if (!hasFeature(tenantPlan, feature)) {
+      setUpgradeModal({ feature });
+    } else {
+      setCurrentView(view);
+    }
   };
 
   const handleExitImpersonation = () => {
@@ -216,14 +236,30 @@ const App: React.FC = () => {
       case View.PROFISSIONAIS: return <ProfessionalsView tenantId={tenantId} />;
       case View.CLIENTES: return <CustomersView tenantId={tenantId} />;
       case View.PERFIL: return <StoreProfile tenantId={tenantId} />;
-      case View.FINANCEIRO: return <FinancialView tenantId={tenantId} />;
+      case View.FINANCEIRO: return (
+        <PlanGate feature="financeiro" tenantPlan={tenantPlan}>
+          <FinancialView tenantId={tenantId} />
+        </PlanGate>
+      );
       case View.CONEXOES: return <ConexoesView tenantId={tenantId} tenantSlug={tenantSlug} />;
-      case View.FOLLOW_UP: return <FollowUpView tenantId={tenantId} />;
+      case View.FOLLOW_UP: return <FollowUpView tenantId={tenantId} tenantPlan={tenantPlan} />;
       case View.PLANOS: return <PlansView tenantId={tenantId} />;
-      case View.TEST_WA: return <AIChatSimulator tenantId={tenantId} />;
+      case View.TEST_WA: return (
+        <PlanGate feature="assistenteAdmin" tenantPlan={tenantPlan}>
+          <AIChatSimulator tenantId={tenantId} />
+        </PlanGate>
+      );
       case View.CONVERSAS: return <ConversationsView tenantId={tenantId} />;
-      case View.DISPARADOR: return <BroadcastView tenantId={tenantId} />;
-      case View.ESTOQUE: return <EstoqueView tenantId={tenantId} />;
+      case View.DISPARADOR: return (
+        <PlanGate feature="disparo" tenantPlan={tenantPlan}>
+          <BroadcastView tenantId={tenantId} />
+        </PlanGate>
+      );
+      case View.ESTOQUE: return (
+        <PlanGate feature="financeiro" tenantPlan={tenantPlan}>
+          <EstoqueView tenantId={tenantId} />
+        </PlanGate>
+      );
       case View.CONFIGURACOES: return <GeneralSettings tenantId={tenantId} />;
       default: return <Dashboard tenantId={tenantId} />;
     }
@@ -236,60 +272,79 @@ const App: React.FC = () => {
     <div className="flex h-screen bg-slate-50/30">
       {tenantId && <AiPollingManager tenantId={tenantId} />}
 
-      {/* Sidebar — scroll interno próprio */}
-      <aside className="w-48 bg-white flex flex-col shrink-0 border-r border-slate-200 z-50 h-screen sticky top-0">
-        <div className="px-5 py-6 flex flex-col space-y-2">
-          <h1 className="text-lg font-black text-black tracking-tighter uppercase italic">AgendeZap</h1>
+      {/* Mobile sidebar backdrop */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 z-40 md:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      {/* Sidebar */}
+      <aside className={`fixed md:relative inset-y-0 left-0 w-64 bg-white flex flex-col shrink-0 border-r border-slate-200 z-50 h-screen md:sticky md:top-0 transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
+        <div className="p-8 flex flex-col space-y-2">
+          <h1 className="text-2xl font-black text-black tracking-tighter uppercase italic">AgendeZap</h1>
           {role === 'SUPERADMIN' && <span className="bg-orange-500 text-white text-[8px] font-black px-2 py-0.5 rounded-full w-fit tracking-widest uppercase">SUPER ADMIN</span>}
         </div>
 
-        <nav className="flex-1 px-3 py-2 space-y-1 overflow-y-auto custom-scrollbar">
+        <nav className="flex-1 px-4 py-2 space-y-1 overflow-y-auto custom-scrollbar">
           {role === 'SUPERADMIN' ? (
             <>
-              <NavItem active={superAdminTab === 'dashboard'} onClick={() => setSuperAdminTab('dashboard')} icon={<IconDashboard />} label="Dashboard" />
-              <NavItem active={superAdminTab === 'clients'} onClick={() => setSuperAdminTab('clients')} icon={<IconUsers />} label="Clientes SaaS" />
-              <NavItem active={superAdminTab === 'avisos'} onClick={() => setSuperAdminTab('avisos')} icon={<IconBroadcast />} label="Avisos" />
-              <NavItem active={superAdminTab === 'cobranca'} onClick={() => setSuperAdminTab('cobranca')} icon={<IconFinance />} label="Cobrança" />
+              <NavItem active={superAdminTab === 'dashboard'} onClick={navTo(() => setSuperAdminTab('dashboard'))} icon={<IconDashboard />} label="Dashboard" />
+              <NavItem active={superAdminTab === 'clients'} onClick={navTo(() => setSuperAdminTab('clients'))} icon={<IconUsers />} label="Clientes SaaS" />
+              <NavItem active={superAdminTab === 'avisos'} onClick={navTo(() => setSuperAdminTab('avisos'))} icon={<IconBroadcast />} label="Avisos" />
+              <NavItem active={superAdminTab === 'cobranca'} onClick={navTo(() => setSuperAdminTab('cobranca'))} icon={<IconFinance />} label="Cobrança" />
+              <div className="pt-4 border-t border-slate-100 mt-2 space-y-1">
+                <p className="text-[9px] font-black text-slate-300 uppercase tracking-[0.2em] px-4 pb-1">WhatsApp Admin</p>
+                <NavItem active={superAdminTab === 'conversas'} onClick={navTo(() => setSuperAdminTab('conversas'))} icon={<IconChat />} label="Conversas" />
+                <NavItem active={superAdminTab === 'disparo'} onClick={navTo(() => setSuperAdminTab('disparo'))} icon={<IconBroadcast />} label="Disparador" />
+                <NavItem active={superAdminTab === 'prospeccao'} onClick={navTo(() => setSuperAdminTab('prospeccao'))} icon={<IconUsers />} label="Prospecção" />
+              </div>
               <div className="pt-4 border-t border-slate-100 mt-2 space-y-1">
                 <p className="text-[9px] font-black text-slate-300 uppercase tracking-[0.2em] px-4 pb-1">Sistema</p>
-                <NavItem active={superAdminTab === 'logs'} onClick={() => setSuperAdminTab('logs')} icon={<IconTerminal />} label="Logs" />
-                <NavItem active={superAdminTab === 'sql'} onClick={() => setSuperAdminTab('sql')} icon={<IconSettings />} label="Banco SQL" />
+                <NavItem active={superAdminTab === 'logs'} onClick={navTo(() => setSuperAdminTab('logs'))} icon={<IconTerminal />} label="Logs" />
+                <NavItem active={superAdminTab === 'sql'} onClick={navTo(() => setSuperAdminTab('sql'))} icon={<IconSettings />} label="Banco SQL" />
+                <NavItem active={superAdminTab === 'ia'} onClick={navTo(() => setSuperAdminTab('ia'))} icon={<IconTerminal />} label="IA / Tokens" />
+              </div>
+              <div className="pt-4 border-t border-slate-100 mt-2 space-y-1">
+                <p className="text-[9px] font-black text-slate-300 uppercase tracking-[0.2em] px-4 pb-1">Suporte</p>
+                <NavItem active={superAdminTab === 'suporte'} onClick={navTo(() => setSuperAdminTab('suporte'))} icon={<IconChat />} label="Caixa de Entrada" />
               </div>
             </>
           ) : (
             <>
               {/* ── Grupo 1: Principal ── */}
-              <NavItem active={currentView === View.DASHBOARD} onClick={() => setCurrentView(View.DASHBOARD)} icon={<IconDashboard />} label="Início" />
-              <NavItem active={currentView === View.AGENDAMENTOS} onClick={() => setCurrentView(View.AGENDAMENTOS)} icon={<IconCalendar />} label="Agenda" />
-              <NavItem active={currentView === View.CLIENTES} onClick={() => setCurrentView(View.CLIENTES)} icon={<IconUserCircle />} label="Clientes" />
-              <NavItem active={currentView === View.SERVICOS} onClick={() => setCurrentView(View.SERVICOS)} icon={<IconScissors />} label="Serviços" />
-              <NavItem active={currentView === View.PROFISSIONAIS} onClick={() => setCurrentView(View.PROFISSIONAIS)} icon={<IconUsers />} label="Equipe" />
+              <NavItem active={currentView === View.DASHBOARD} onClick={navTo(() => setCurrentView(View.DASHBOARD))} icon={<IconDashboard />} label="Início" />
+              <NavItem active={currentView === View.AGENDAMENTOS} onClick={navTo(() => setCurrentView(View.AGENDAMENTOS))} icon={<IconCalendar />} label="Agenda" />
+              <NavItem active={currentView === View.CLIENTES} onClick={navTo(() => setCurrentView(View.CLIENTES))} icon={<IconUserCircle />} label="Clientes" />
+              <NavItem active={currentView === View.SERVICOS} onClick={navTo(() => setCurrentView(View.SERVICOS))} icon={<IconScissors />} label="Serviços" />
+              <NavItem active={currentView === View.PROFISSIONAIS} onClick={navTo(() => setCurrentView(View.PROFISSIONAIS))} icon={<IconUsers />} label="Equipe" />
 
               {/* ── Grupo 2: Comunicação ── */}
               <div className="pt-4 mt-2 border-t border-slate-100 space-y-1">
-                <NavItem active={currentView === View.CONVERSAS} onClick={() => setCurrentView(View.CONVERSAS)} icon={<IconChat />} label="Conversas" />
-                <NavItem active={currentView === View.DISPARADOR} onClick={() => setCurrentView(View.DISPARADOR)} icon={<IconBroadcast />} label="Disparador" />
-                <NavItem active={currentView === View.FOLLOW_UP} onClick={() => setCurrentView(View.FOLLOW_UP)} icon={<IconClock />} label="Lembretes" />
-                <NavItem active={currentView === View.PLANOS} onClick={() => setCurrentView(View.PLANOS)} icon={<IconPlans />} label="Planos" />
+                <NavItem active={currentView === View.CONVERSAS} onClick={navTo(() => setCurrentView(View.CONVERSAS))} icon={<IconChat />} label="Conversas" />
+                <NavItem active={currentView === View.DISPARADOR} onClick={navTo(() => handleGatedNav(View.DISPARADOR, 'disparo'))} icon={<IconBroadcast />} label="Disparador" />
+                <NavItem active={currentView === View.FOLLOW_UP} onClick={navTo(() => setCurrentView(View.FOLLOW_UP))} icon={<IconClock />} label="Lembretes" />
+                <NavItem active={currentView === View.PLANOS} onClick={navTo(() => setCurrentView(View.PLANOS))} icon={<IconPlans />} label="Planos" />
               </div>
 
               {/* ── Grupo 3: Financeiro ── */}
               <div className="pt-4 mt-2 border-t border-slate-100 space-y-1">
-                <NavItem active={currentView === View.FINANCEIRO} onClick={() => setCurrentView(View.FINANCEIRO)} icon={<IconFinance />} label="Caixa" />
-                <NavItem active={currentView === View.ESTOQUE} onClick={() => setCurrentView(View.ESTOQUE)} icon={<IconBox />} label="Estoque" />
+                <NavItem active={currentView === View.FINANCEIRO} onClick={navTo(() => handleGatedNav(View.FINANCEIRO, 'financeiro'))} icon={<IconFinance />} label="Caixa" />
+                <NavItem active={currentView === View.ESTOQUE} onClick={navTo(() => handleGatedNav(View.ESTOQUE, 'financeiro'))} icon={<IconBox />} label="Estoque" />
               </div>
             </>
           )}
 
           {/* ── Grupo 4: Sistema ── */}
           <div className="pt-4 border-t border-slate-100 mt-2 space-y-1">
-            <NavItem active={currentView === View.CONEXOES} onClick={() => setCurrentView(View.CONEXOES)} icon={<IconWhatsapp />} label="Conexões" color="text-green-600" />
-            <NavItem active={currentView === View.CONFIGURACOES} onClick={() => setCurrentView(View.CONFIGURACOES)} icon={<IconSettings />} label="Ajustes" />
-            <NavItem active={currentView === View.TEST_WA} onClick={() => setCurrentView(View.TEST_WA)} icon={<IconTerminal />} label="Terminal IA" />
+            <NavItem active={currentView === View.CONEXOES} onClick={navTo(() => setCurrentView(View.CONEXOES))} icon={<IconWhatsapp />} label="Conexões" color="text-green-600" />
+            <NavItem active={currentView === View.CONFIGURACOES} onClick={navTo(() => setCurrentView(View.CONFIGURACOES))} icon={<IconSettings />} label="Ajustes" />
+            <NavItem active={currentView === View.TEST_WA} onClick={navTo(() => handleGatedNav(View.TEST_WA, 'assistenteAdmin'))} icon={<IconTerminal />} label="Terminal IA" />
           </div>
         </nav>
 
-        <div className="px-4 py-4 border-t border-slate-100 bg-slate-50/50 space-y-2">
+        <div className="p-6 border-t border-slate-100 bg-slate-50/50 space-y-2">
           {isImpersonating && (
             <button onClick={handleExitImpersonation} className="flex items-center gap-2 w-full bg-orange-500 text-white px-4 py-2.5 rounded-xl font-black text-[9px] uppercase tracking-widest hover:bg-black transition-all">
               <span>↩</span><span>Sair da conta</span>
@@ -303,12 +358,22 @@ const App: React.FC = () => {
 
       {/* ✅ CORREÇÃO PRINCIPAL: main sem overflow-auto — o scroll fica no div interno */}
       <main className="flex-1 flex flex-col min-w-0">
-        <header className="px-10 py-5 flex items-center justify-between shrink-0 bg-slate-50 z-40 border-b border-slate-200 sticky top-0">
+        <header className="px-4 md:px-10 py-5 flex items-center justify-between shrink-0 bg-slate-50 z-40 border-b border-slate-200 sticky top-0">
           <div className="flex items-center gap-3">
+            {/* Hamburger — mobile only */}
+            <button
+              className="md:hidden flex flex-col gap-1.5 p-2 rounded-xl hover:bg-slate-100 transition-all"
+              onClick={() => setSidebarOpen(v => !v)}
+              aria-label="Menu"
+            >
+              <span className="w-5 h-0.5 bg-slate-700 block" />
+              <span className="w-5 h-0.5 bg-slate-700 block" />
+              <span className="w-5 h-0.5 bg-slate-700 block" />
+            </button>
             <div className="w-1 h-6 rounded-full bg-orange-500" />
             <h2 className="text-sm font-black text-slate-700 tracking-widest uppercase">
               {role === 'SUPERADMIN'
-                ? ({ dashboard: 'Dashboard Global', clients: 'Clientes SaaS', avisos: 'Enviar Avisos', cobranca: 'Gestão de Cobrança', logs: 'Logs de Atividade', sql: 'Configurar Banco SQL' } as Record<SuperAdminTab, string>)[superAdminTab]
+                ? ({ dashboard: 'Dashboard Global', clients: 'Clientes SaaS', avisos: 'Enviar Avisos', cobranca: 'Gestão de Cobrança', logs: 'Logs de Atividade', sql: 'Configurar Banco SQL', ia: 'IA / Tokens', conversas: 'Conversas Admin', disparo: 'Disparador Admin', prospeccao: 'Prospecção de Clientes', suporte: 'Caixa de Entrada' } as Record<SuperAdminTab, string>)[superAdminTab]
                 : tenantName}
             </h2>
           </div>
@@ -337,14 +402,23 @@ const App: React.FC = () => {
           <div className="p-10">{renderView()}</div>
         </div>
       </main>
+
+      {upgradeModal && (
+        <PlanUpgradeModal
+          feature={upgradeModal.feature}
+          tenantPlan={tenantPlan}
+          tenantId={tenantId}
+          onClose={() => setUpgradeModal(null)}
+        />
+      )}
     </div>
   );
 };
 
 const NavItem = ({ active, onClick, icon, label, color }: any) => (
-  <button onClick={onClick} className={`w-full flex items-center px-3 py-2.5 rounded-xl transition-all group ${active ? 'bg-black text-white shadow-xl scale-105' : `text-slate-500 hover:bg-slate-100 ${color || ''}`}`}>
-    <span className={`text-base mr-2 ${active ? 'text-orange-500' : 'text-slate-400 group-hover:text-black'}`}>{icon}</span>
-    <span className={`font-black text-[9px] uppercase tracking-widest truncate ${active ? 'text-white' : ''}`}>{label}</span>
+  <button onClick={onClick} className={`w-full flex items-center px-4 py-3 rounded-xl transition-all group ${active ? 'bg-black text-white shadow-xl scale-105' : `text-slate-500 hover:bg-slate-100 ${color || ''}`}`}>
+    <span className={`text-xl mr-3 ${active ? 'text-orange-500' : 'text-slate-400 group-hover:text-black'}`}>{icon}</span>
+    <span className={`font-black text-[10px] uppercase tracking-widest ${active ? 'text-white' : ''}`}>{label}</span>
   </button>
 );
 

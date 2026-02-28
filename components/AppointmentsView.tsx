@@ -345,7 +345,7 @@ const AppointmentsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
                     const isAI = a.source === BookingSource.AI;
                     const isPlan = a.isPlan || a.source === BookingSource.PLAN;
                     return (
-                      <tr key={a.id} className="hover:bg-orange-50 transition-colors">
+                      <tr key={a.id} className="hover:bg-slate-100 transition-colors">
                         <td className="px-8 py-6">
                           <div className="flex flex-col gap-1">
                             <span className="text-xs font-black text-slate-400 uppercase">{appDate.toLocaleDateString('pt-BR')}</span>
@@ -437,7 +437,7 @@ const AppointmentsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
                           <button
                             key={c.id}
                             onClick={() => { setCustomerId(c.id); setCustomerSearch(''); }}
-                            className="w-full text-left px-4 py-3 hover:bg-orange-50 transition-colors border-b border-slate-50 last:border-0"
+                            className="w-full text-left px-4 py-3 hover:bg-slate-100 transition-colors border-b border-slate-50 last:border-0"
                           >
                             <span className="text-xs font-black text-black uppercase">{c.name}</span>
                             <span className="text-[10px] text-slate-400 font-bold ml-2">{c.phone}</span>
@@ -461,7 +461,7 @@ const AppointmentsView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
                           <button
                             key={c.id}
                             onClick={() => { setCustomerId(c.id); setCustomerSearch(''); }}
-                            className="w-full text-left px-4 py-3 hover:bg-orange-50 transition-colors border-b border-slate-50 last:border-0"
+                            className="w-full text-left px-4 py-3 hover:bg-slate-100 transition-colors border-b border-slate-50 last:border-0"
                           >
                             <span className="text-xs font-black text-black uppercase">{c.name}</span>
                             <span className="text-[10px] text-slate-400 font-bold ml-2">{c.phone}</span>

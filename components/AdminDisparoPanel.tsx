@@ -1,8 +1,6 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { db } from '../services/mockDb';
+import React, { useState, useRef, useEffect } from 'react';
 import { evolutionService } from '../services/evolutionService';
-import { supabase } from '../services/supabase';
-import { Customer } from '../types';
+import { ProspectCampaign } from '../services/serperService';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 const randRange = (min: number, max: number) =>
@@ -17,8 +15,6 @@ const formatSeconds = (s: number) => {
   return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
 };
 
-// ─────────────────────────────────────────────────────────────────────
-
 interface BroadcastProgress {
   sent: number;
   total: number;
@@ -28,151 +24,127 @@ interface BroadcastProgress {
   nextDelay: number;
   done: boolean;
   stopped: boolean;
+  errors: number;
 }
 
-const BroadcastView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
-  // Data
-  const [allCustomers, setAllCustomers] = useState<Customer[]>([]);
-  const [appointments, setAppointments] = useState<any[]>([]);
-  const [instanceName, setInstanceName] = useState('');
-  const [connected, setConnected] = useState(false);
-  const [loading, setLoading] = useState(true);
+interface Contact {
+  id: string;
+  name: string;
+  phone: string;
+}
 
-  // Filter
-  const [filterMode, setFilterMode] = useState<'all' | 'inactive'>('all');
-  const [inactiveDays, setInactiveDays] = useState(30);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [listSearch, setListSearch] = useState('');
+interface Props {
+  adminInstanceName: string;
+  adminConnected: boolean;
+  campaigns: ProspectCampaign[];
+  initialCampaignId?: string;
+  onGoToConexao: () => void;
+}
 
-  // Messages (up to 5)
+const AdminDisparoPanel: React.FC<Props> = ({
+  adminInstanceName,
+  adminConnected,
+  campaigns,
+  initialCampaignId,
+  onGoToConexao,
+}) => {
+  // Source
+  const [source, setSource] = useState<'campaign' | 'custom'>('campaign');
+  const [selectedCampaignId, setSelectedCampaignId] = useState(initialCampaignId || '');
+  const [customText, setCustomText] = useState('');
+
+  // Messages
   const [messages, setMessages] = useState<string[]>(['']);
 
   // Timing
-  const [delayMin, setDelayMin] = useState(30);   // seconds
+  const [delayMin, setDelayMin] = useState(30);
   const [delayMax, setDelayMax] = useState(60);
   const [pauseEvery, setPauseEvery] = useState(20);
-  const [pauseMin, setPauseMin] = useState(120);  // seconds
+  const [pauseMin, setPauseMin] = useState(120);
   const [pauseMax, setPauseMax] = useState(300);
 
-  // State
+  // Progress
   const [progress, setProgress] = useState<BroadcastProgress | null>(null);
   const abortRef = useRef(false);
   const pauseTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const load = useCallback(async () => {
-    if (!tenantId) return;
-    setLoading(true);
-    try {
-      const { data: tenants } = await supabase.from('tenants').select('*');
-      const tenant = (tenants || []).find((t: any) => t.id === tenantId || t.slug === tenantId);
-      if (tenant) {
-        const inst = tenant.evolution_instance || evolutionService.getInstanceName(tenant.slug);
-        setInstanceName(inst);
-        const status = await evolutionService.checkStatus(inst);
-        setConnected(status === 'open');
-      }
-      const [custs, appts] = await Promise.all([
-        db.getCustomers(tenantId),
-        db.getAppointments(tenantId),
-      ]);
-      setAllCustomers(custs);
-      setAppointments(appts);
-    } finally {
-      setLoading(false);
-    }
-  }, [tenantId]);
-
-  useEffect(() => { load(); }, [load]);
-
-  // ── Computed customer list based on filter ──────────────────────────
-  const filteredCustomers = React.useMemo(() => {
-    let list = allCustomers.filter(c => c.phone && c.active !== false);
-
-    if (filterMode === 'inactive') {
-      const cutoff = new Date();
-      cutoff.setDate(cutoff.getDate() - inactiveDays);
-      list = list.filter(c => {
-        const custAppts = appointments.filter(a => a.customer_id === c.id);
-        if (custAppts.length === 0) return true;
-        const last = custAppts.sort((a, b) => b.startTime.localeCompare(a.startTime))[0];
-        return new Date(last.startTime) < cutoff;
-      });
-    }
-
-    if (listSearch) {
-      list = list.filter(c =>
-        c.name.toLowerCase().includes(listSearch.toLowerCase()) ||
-        c.phone.includes(listSearch)
-      );
-    }
-    return list;
-  }, [allCustomers, appointments, filterMode, inactiveDays, listSearch]);
-
-  // Sync selectedIds when filter changes
+  // When initialCampaignId changes (navigate from prospecção), update selection
   useEffect(() => {
-    setSelectedIds(new Set(filteredCustomers.map(c => c.id)));
-  }, [filteredCustomers]);
+    if (initialCampaignId) {
+      setSelectedCampaignId(initialCampaignId);
+      setSource('campaign');
+    }
+  }, [initialCampaignId]);
+
+  // ── Derived contacts ────────────────────────────────────────────────
+  const contacts: Contact[] = React.useMemo(() => {
+    if (source === 'campaign') {
+      const camp = campaigns.find(c => c.id === selectedCampaignId);
+      return camp ? camp.contacts.filter(c => c.phone) : [];
+    }
+    // Custom: one per line, format "Nome: 55111234" or just "55111234"
+    return customText
+      .split('\n')
+      .map((line, i) => {
+        const trimmed = line.trim();
+        if (!trimmed) return null;
+        const colonIdx = trimmed.indexOf(':');
+        if (colonIdx > 0) {
+          const name = trimmed.slice(0, colonIdx).trim();
+          const phone = trimmed.slice(colonIdx + 1).replace(/\D/g, '');
+          if (phone.length >= 10) return { id: `custom-${i}`, name, phone };
+        }
+        const phone = trimmed.replace(/\D/g, '');
+        if (phone.length >= 10) return { id: `custom-${i}`, name: phone, phone };
+        return null;
+      })
+      .filter(Boolean) as Contact[];
+  }, [source, selectedCampaignId, campaigns, customText]);
 
   // ── Message helpers ─────────────────────────────────────────────────
-  const updateMsg = (i: number, val: string) => {
+  const updateMsg = (i: number, val: string) =>
     setMessages(prev => { const n = [...prev]; n[i] = val; return n; });
-  };
-  const addMsg = () => {
-    if (messages.length < 5) setMessages(prev => [...prev, '']);
-  };
-  const removeMsg = (i: number) => {
-    setMessages(prev => prev.filter((_, idx) => idx !== i));
-  };
+  const addMsg = () => { if (messages.length < 5) setMessages(prev => [...prev, '']); };
+  const removeMsg = (i: number) => setMessages(prev => prev.filter((_, idx) => idx !== i));
   const activeMessages = messages.filter(m => m.trim());
-
-  // ── Selection helpers ───────────────────────────────────────────────
-  const toggleCustomer = (id: string) => {
-    setSelectedIds(prev => {
-      const n = new Set(prev);
-      n.has(id) ? n.delete(id) : n.add(id);
-      return n;
-    });
-  };
-  const selectAll = () => setSelectedIds(new Set(filteredCustomers.map(c => c.id)));
-  const deselectAll = () => setSelectedIds(new Set());
 
   // ── Broadcast ────────────────────────────────────────────────────────
   const startBroadcast = async () => {
-    if (!connected) { alert('WhatsApp não está conectado!'); return; }
+    if (!adminConnected) { alert('WhatsApp do admin não está conectado!\nVá em Conversas para conectar.'); return; }
     if (activeMessages.length === 0) { alert('Adicione pelo menos uma mensagem.'); return; }
-    if (selectedIds.size === 0) { alert('Selecione pelo menos um cliente.'); return; }
+    if (contacts.length === 0) { alert('Nenhum contato selecionado.'); return; }
     if (delayMin > delayMax) { alert('Delay mínimo deve ser ≤ delay máximo.'); return; }
 
     abortRef.current = false;
-    const recipients = allCustomers.filter(c => selectedIds.has(c.id));
     let sentCount = 0;
+    let errorCount = 0;
 
-    setProgress({ sent: 0, total: recipients.length, currentName: '', pausing: false, pauseSecondsLeft: 0, nextDelay: 0, done: false, stopped: false });
+    setProgress({
+      sent: 0, total: contacts.length, currentName: '', pausing: false,
+      pauseSecondsLeft: 0, nextDelay: 0, done: false, stopped: false, errors: 0,
+    });
 
-    for (let i = 0; i < recipients.length; i++) {
+    for (let i = 0; i < contacts.length; i++) {
       if (abortRef.current) {
         setProgress(p => p ? { ...p, stopped: true } : null);
         break;
       }
 
-      const customer = recipients[i];
-      if (!customer.phone) continue;
-
+      const contact = contacts[i];
       const msg = activeMessages[sentCount % activeMessages.length];
-      setProgress(p => p ? { ...p, currentName: customer.name } : null);
+      setProgress(p => p ? { ...p, currentName: contact.name } : null);
 
       try {
-        await evolutionService.sendMessage(instanceName, customer.phone, msg);
+        await evolutionService.sendMessage(adminInstanceName, contact.phone, msg);
         sentCount++;
       } catch {
-        // skip on error, still count
+        errorCount++;
         sentCount++;
       }
 
-      setProgress(p => p ? { ...p, sent: sentCount } : null);
+      setProgress(p => p ? { ...p, sent: sentCount, errors: errorCount } : null);
 
-      // Check if we should pause BEFORE the next message
-      if (i < recipients.length - 1) {
+      if (i < contacts.length - 1) {
         const shouldPause = pauseEvery > 0 && sentCount % pauseEvery === 0;
 
         if (shouldPause) {
@@ -225,36 +197,42 @@ const BroadcastView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
 
   const isSending = progress !== null && !progress.done && !progress.stopped;
 
-  if (loading) return <div className="p-20 text-center font-black animate-pulse text-slate-400 uppercase tracking-widest text-xs">Carregando...</div>;
-
   return (
     <div className="space-y-8 animate-fadeIn">
       {/* Header */}
-      <div className="flex justify-between items-center">
+      <div className="flex justify-between items-center flex-wrap gap-4">
         <div>
-          <h1 className="text-3xl font-black text-black uppercase tracking-tight">Disparador</h1>
+          <h1 className="text-3xl font-black text-black uppercase tracking-tight">Disparador Admin</h1>
           <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">
-            Mensagens em massa com rotação e delay inteligente
+            Envio em massa para contatos prospectados ou personalizados
           </p>
         </div>
-        {!connected && (
-          <div className="bg-red-50 border-2 border-red-100 px-5 py-3 rounded-2xl">
-            <p className="text-[10px] font-black text-red-600 uppercase">WhatsApp offline — conecte primeiro</p>
-          </div>
-        )}
-        {connected && (
+        {adminConnected ? (
           <div className="bg-green-50 border-2 border-green-100 px-5 py-3 rounded-2xl">
-            <p className="text-[10px] font-black text-green-600 uppercase">● WhatsApp conectado</p>
+            <p className="text-[10px] font-black text-green-600 uppercase">● WhatsApp Admin Conectado</p>
           </div>
+        ) : (
+          <button
+            onClick={onGoToConexao}
+            className="bg-red-50 border-2 border-red-100 px-5 py-3 rounded-2xl hover:bg-red-100 transition-all"
+          >
+            <p className="text-[10px] font-black text-red-600 uppercase">⚠ WhatsApp desconectado — conectar</p>
+          </button>
         )}
       </div>
 
-      {/* ── Progress bar ─────────────────────────────────────────────── */}
+      {/* Progress */}
       {progress && (
-        <div className={`rounded-[28px] p-8 border-2 space-y-4 ${progress.done ? 'bg-green-50 border-green-100' : progress.stopped ? 'bg-red-50 border-red-100' : 'bg-orange-50 border-orange-100'}`}>
-          <div className="flex justify-between items-center">
+        <div className={`rounded-[28px] p-8 border-2 space-y-4 ${
+          progress.done ? 'bg-green-50 border-green-100' :
+          progress.stopped ? 'bg-red-50 border-red-100' :
+          'bg-orange-50 border-orange-100'
+        }`}>
+          <div className="flex justify-between items-start">
             <div>
-              <p className={`text-lg font-black uppercase tracking-tight ${progress.done ? 'text-green-700' : progress.stopped ? 'text-red-700' : 'text-orange-700'}`}>
+              <p className={`text-lg font-black uppercase tracking-tight ${
+                progress.done ? 'text-green-700' : progress.stopped ? 'text-red-700' : 'text-orange-700'
+              }`}>
                 {progress.done ? '✅ Disparo concluído!' : progress.stopped ? '⛔ Disparo interrompido' : '📤 Disparando...'}
               </p>
               {!progress.done && !progress.stopped && (
@@ -264,28 +242,38 @@ const BroadcastView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
                     : `Enviando para *${progress.currentName}* — próximo em ${formatSeconds(progress.nextDelay)}`}
                 </p>
               )}
+              {progress.errors > 0 && (
+                <p className="text-[10px] font-bold text-red-400 mt-1">{progress.errors} erro(s) de envio</p>
+              )}
             </div>
             <p className={`text-3xl font-black ${progress.done ? 'text-green-700' : 'text-orange-700'}`}>
               {progress.sent}/{progress.total}
             </p>
           </div>
 
-          {/* Progress bar */}
           <div className="h-3 bg-white rounded-full overflow-hidden border border-slate-100">
             <div
-              className={`h-full rounded-full transition-all duration-500 ${progress.done ? 'bg-green-500' : progress.stopped ? 'bg-red-400' : 'bg-orange-500'}`}
+              className={`h-full rounded-full transition-all duration-500 ${
+                progress.done ? 'bg-green-500' : progress.stopped ? 'bg-red-400' : 'bg-orange-500'
+              }`}
               style={{ width: `${progress.total > 0 ? (progress.sent / progress.total) * 100 : 0}%` }}
             />
           </div>
 
           <div className="flex gap-3">
             {isSending && (
-              <button onClick={stopBroadcast} className="px-6 py-2.5 bg-red-500 text-white rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-red-600 transition-all">
+              <button
+                onClick={stopBroadcast}
+                className="px-6 py-2.5 bg-red-500 text-white rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-red-600 transition-all"
+              >
                 ⛔ Parar
               </button>
             )}
             {(progress.done || progress.stopped) && (
-              <button onClick={resetBroadcast} className="px-6 py-2.5 bg-black text-white rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-orange-500 transition-all">
+              <button
+                onClick={resetBroadcast}
+                className="px-6 py-2.5 bg-black text-white rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-orange-500 transition-all"
+              >
                 ↺ Novo Disparo
               </button>
             )}
@@ -294,84 +282,106 @@ const BroadcastView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {/* ── Left: Customer List ───────────────────────────────────── */}
+        {/* Left: Contact Source */}
         <div className="bg-white border-2 border-slate-100 rounded-[28px] p-8 space-y-6 shadow-xl shadow-slate-100/50">
-          <h2 className="text-sm font-black text-black uppercase tracking-widest">1. Selecionar Clientes</h2>
+          <h2 className="text-sm font-black text-black uppercase tracking-widest">1. Selecionar Contatos</h2>
 
-          {/* Filter mode */}
+          {/* Source toggle */}
           <div className="flex gap-3">
             <button
-              onClick={() => setFilterMode('all')}
-              className={`flex-1 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest border-2 transition-all ${filterMode === 'all' ? 'bg-black text-white border-black' : 'bg-white text-slate-500 border-slate-200 hover:border-black'}`}
+              onClick={() => setSource('campaign')}
+              className={`flex-1 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest border-2 transition-all ${
+                source === 'campaign' ? 'bg-black text-white border-black' : 'bg-white text-slate-500 border-slate-200 hover:border-black'
+              }`}
             >
-              Todos os Clientes
+              📋 Campanha
             </button>
             <button
-              onClick={() => setFilterMode('inactive')}
-              className={`flex-1 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest border-2 transition-all ${filterMode === 'inactive' ? 'bg-black text-white border-black' : 'bg-white text-slate-500 border-slate-200 hover:border-black'}`}
+              onClick={() => setSource('custom')}
+              className={`flex-1 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest border-2 transition-all ${
+                source === 'custom' ? 'bg-black text-white border-black' : 'bg-white text-slate-500 border-slate-200 hover:border-black'
+              }`}
             >
-              Inativos há +X dias
+              ✏️ Personalizado
             </button>
           </div>
 
-          {filterMode === 'inactive' && (
-            <div className="flex items-center gap-3 bg-slate-50 rounded-2xl px-5 py-3">
-              <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest whitespace-nowrap">Sem visita há mais de</span>
-              <input
-                type="number"
-                min={1}
-                value={inactiveDays}
-                onChange={e => setInactiveDays(Math.max(1, Number(e.target.value)))}
-                className="w-16 text-center bg-white border-2 border-slate-200 rounded-xl py-1.5 font-black text-sm outline-none focus:border-orange-500"
-              />
-              <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">dias</span>
+          {source === 'campaign' && (
+            <div className="space-y-3">
+              {campaigns.length === 0 ? (
+                <div className="bg-slate-50 rounded-2xl p-6 text-center">
+                  <p className="text-xs font-black text-slate-300 uppercase">Nenhuma campanha</p>
+                  <p className="text-[10px] font-bold text-slate-300 mt-1">Crie uma campanha na aba Prospecção</p>
+                </div>
+              ) : (
+                <>
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Campanha</label>
+                  <select
+                    value={selectedCampaignId}
+                    onChange={e => setSelectedCampaignId(e.target.value)}
+                    disabled={isSending}
+                    className="w-full p-3 bg-slate-50 border-2 border-transparent focus:border-orange-500 rounded-2xl text-sm font-semibold outline-none transition-all"
+                  >
+                    <option value="">— Selecione uma campanha —</option>
+                    {campaigns.map(c => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} ({c.contacts.length} contatos)
+                      </option>
+                    ))}
+                  </select>
+                </>
+              )}
+
+              {/* Contact preview */}
+              {contacts.length > 0 && (
+                <div className="max-h-48 overflow-y-auto custom-scrollbar space-y-1">
+                  {contacts.slice(0, 50).map(c => (
+                    <div key={c.id} className="flex items-center gap-3 px-4 py-2 rounded-2xl bg-slate-50">
+                      <div className="w-7 h-7 bg-orange-100 rounded-xl flex items-center justify-center text-xs flex-shrink-0">
+                        {c.name[0]?.toUpperCase() || '?'}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[10px] font-black text-black truncate">{c.name}</p>
+                        <p className="text-[9px] font-bold text-slate-400">{c.phone}</p>
+                      </div>
+                    </div>
+                  ))}
+                  {contacts.length > 50 && (
+                    <p className="text-center text-[9px] font-black text-slate-300 uppercase py-2">
+                      + {contacts.length - 50} contatos...
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
-          {/* Search + bulk actions */}
-          <div className="space-y-2">
-            <input
-              placeholder="Buscar cliente..."
-              value={listSearch}
-              onChange={e => setListSearch(e.target.value)}
-              className="w-full px-4 py-2.5 bg-slate-50 rounded-2xl text-xs font-bold outline-none border-2 border-transparent focus:border-orange-500 transition-all"
-            />
-            <div className="flex gap-2 items-center">
-              <button onClick={selectAll} className="text-[9px] font-black text-orange-500 uppercase tracking-widest hover:underline">Selecionar Todos</button>
-              <span className="text-slate-200">|</span>
-              <button onClick={deselectAll} className="text-[9px] font-black text-slate-400 uppercase tracking-widest hover:underline">Desmarcar Todos</button>
-              <span className="text-[9px] font-black text-slate-400 ml-auto">
-                {selectedIds.size} de {filteredCustomers.length} selecionados
-              </span>
-            </div>
-          </div>
-
-          {/* Customer list */}
-          <div className="max-h-72 overflow-y-auto custom-scrollbar space-y-1.5">
-            {filteredCustomers.length === 0 && (
-              <p className="text-center py-8 text-slate-300 text-xs font-black uppercase">
-                {filterMode === 'inactive' ? `Nenhum cliente inativo há +${inactiveDays} dias` : 'Nenhum cliente encontrado'}
-              </p>
-            )}
-            {filteredCustomers.map(c => (
-              <label key={c.id} className="flex items-center gap-3 px-4 py-2.5 rounded-2xl hover:bg-slate-100 cursor-pointer transition-all">
-                <input
-                  type="checkbox"
-                  checked={selectedIds.has(c.id)}
-                  onChange={() => toggleCustomer(c.id)}
-                  className="w-4 h-4 accent-orange-500 flex-shrink-0"
-                  disabled={isSending}
-                />
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-black text-black truncate">{c.name}</p>
-                  <p className="text-[9px] font-bold text-slate-400">{c.phone}</p>
-                </div>
+          {source === 'custom' && (
+            <div className="space-y-2">
+              <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                Um contato por linha
               </label>
-            ))}
-          </div>
+              <p className="text-[9px] font-bold text-slate-300">
+                Formato: <span className="font-mono">55119999999</span> ou <span className="font-mono">Nome: 55119999999</span>
+              </p>
+              <textarea
+                value={customText}
+                onChange={e => setCustomText(e.target.value)}
+                disabled={isSending}
+                placeholder={"5511999990001\nJoão: 5511999990002\n5511999990003"}
+                rows={10}
+                className="w-full px-4 py-3 bg-slate-50 rounded-2xl text-xs font-mono outline-none border-2 border-transparent focus:border-orange-500 transition-all resize-none"
+              />
+              {contacts.length > 0 && (
+                <p className="text-[10px] font-black text-green-600">
+                  ✓ {contacts.length} número{contacts.length !== 1 ? 's' : ''} válido{contacts.length !== 1 ? 's' : ''}
+                </p>
+              )}
+            </div>
+          )}
         </div>
 
-        {/* ── Right: Messages + Timing ──────────────────────────────── */}
+        {/* Right: Messages + Timing */}
         <div className="space-y-6">
           {/* Messages */}
           <div className="bg-white border-2 border-slate-100 rounded-[28px] p-8 space-y-5 shadow-xl shadow-slate-100/50">
@@ -379,7 +389,6 @@ const BroadcastView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
               <h2 className="text-sm font-black text-black uppercase tracking-widest">2. Mensagens (até 5)</h2>
               <span className="text-[9px] font-black text-slate-300 uppercase">Rotação automática</span>
             </div>
-            <p className="text-[10px] font-bold text-slate-400">O sistema alterna as mensagens em sequência a cada envio.</p>
 
             <div className="space-y-3">
               {messages.map((msg, i) => (
@@ -421,7 +430,7 @@ const BroadcastView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
           <div className="bg-white border-2 border-slate-100 rounded-[28px] p-8 space-y-6 shadow-xl shadow-slate-100/50">
             <h2 className="text-sm font-black text-black uppercase tracking-widest">3. Timing de Envio</h2>
 
-            {/* Delay between messages */}
+            {/* Delay */}
             <div className="space-y-3">
               <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Delay entre mensagens</p>
               <div className="flex items-center gap-3">
@@ -449,10 +458,9 @@ const BroadcastView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
                   <span className="text-[10px] font-black text-slate-400">s</span>
                 </div>
               </div>
-              <p className="text-[9px] font-bold text-slate-300">Variação aleatória: evita detecção de padrão</p>
             </div>
 
-            {/* Pause interval */}
+            {/* Pause */}
             <div className="space-y-3">
               <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Intervalo de proteção</p>
               <div className="bg-slate-50 rounded-2xl p-4 space-y-3">
@@ -487,33 +495,32 @@ const BroadcastView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
                   <span className="text-[10px] font-black text-slate-500 uppercase">s</span>
                 </div>
               </div>
-              <p className="text-[9px] font-bold text-slate-300">Simula comportamento humano, reduz risco de bloqueio</p>
             </div>
 
             {/* Summary */}
             <div className="bg-orange-50 border border-orange-100 rounded-2xl p-4">
               <p className="text-[10px] font-black text-orange-600 uppercase tracking-widest mb-2">Resumo do Disparo</p>
               <p className="text-[10px] font-bold text-orange-500">
-                📤 {selectedIds.size} destinatários · {activeMessages.length} mensagem{activeMessages.length !== 1 ? 's' : ''} em rotação
+                📤 {contacts.length} destinatários · {activeMessages.length} mensagem{activeMessages.length !== 1 ? 's' : ''} em rotação
               </p>
               <p className="text-[10px] font-bold text-orange-500">
                 ⏱ Delay {delayMin}–{delayMax}s · Pausa de {formatSeconds(pauseMin)}–{formatSeconds(pauseMax)} a cada {pauseEvery} msgs
               </p>
-              {selectedIds.size > 0 && (
+              {contacts.length > 0 && (
                 <p className="text-[9px] font-bold text-orange-400 mt-1">
-                  Tempo estimado mínimo: ~{formatSeconds(selectedIds.size * delayMin + Math.floor(selectedIds.size / pauseEvery) * pauseMin)}
+                  Tempo estimado mínimo: ~{formatSeconds(contacts.length * delayMin + Math.floor(contacts.length / pauseEvery) * pauseMin)}
                 </p>
               )}
             </div>
 
-            {/* Start button */}
+            {/* Start */}
             {!isSending && !progress && (
               <button
                 onClick={startBroadcast}
-                disabled={!connected || activeMessages.length === 0 || selectedIds.size === 0}
+                disabled={!adminConnected || activeMessages.length === 0 || contacts.length === 0}
                 className="w-full py-5 bg-orange-500 text-white rounded-2xl font-black text-xs uppercase tracking-widest shadow-xl shadow-orange-200 hover:bg-orange-600 hover:scale-[1.02] transition-all disabled:opacity-40 disabled:scale-100 disabled:shadow-none"
               >
-                🚀 Iniciar Disparo — {selectedIds.size} Clientes
+                🚀 Iniciar Disparo — {contacts.length} Contato{contacts.length !== 1 ? 's' : ''}
               </button>
             )}
 
@@ -532,4 +539,4 @@ const BroadcastView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
   );
 };
 
-export default BroadcastView;
+export default AdminDisparoPanel;

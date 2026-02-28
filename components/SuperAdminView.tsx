@@ -4,6 +4,13 @@ import { db } from '../services/mockDb';
 import { BarChart, Bar, PieChart, Pie, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { TenantStatus, Tenant } from '../types';
 import { evolutionService } from '../services/evolutionService';
+import { fetchUsageStats, UsageSummary } from '../services/usageTracker';
+import { NICHOS } from '../config/nichoConfigs';
+import { PLAN_CONFIGS, getPlanConfig } from '../config/planConfig';
+import { ProspectCampaign, loadCampaigns, saveCampaigns, loadAdminInstance } from '../services/serperService';
+import AdminConversasPanel from './AdminConversasPanel';
+import AdminProspeccaoPanel from './AdminProspeccaoPanel';
+import AdminDisparoPanel from './AdminDisparoPanel';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -31,7 +38,7 @@ interface AdminLog {
   detail: string;
 }
 
-type Tab = 'dashboard' | 'clients' | 'avisos' | 'cobranca' | 'logs' | 'sql';
+type Tab = 'dashboard' | 'clients' | 'avisos' | 'cobranca' | 'logs' | 'sql' | 'ia' | 'conversas' | 'disparo' | 'prospeccao' | 'suporte';
 
 const STATUS_COLORS: Record<string, string> = {
   [TenantStatus.ACTIVE]: '#22c55e',
@@ -85,7 +92,7 @@ function saveBillingSent(sent: Record<string, string>) {
 interface SuperAdminViewProps {
   activeTab: Tab;
   onTabChange: (tab: Tab) => void;
-  onImpersonate: (id: string, name: string, slug: string) => void;
+  onImpersonate: (id: string, name: string, slug: string, plan?: string) => void;
 }
 
 const SuperAdminView: React.FC<SuperAdminViewProps> = ({ activeTab: tab, onTabChange: setTab, onImpersonate }) => {
@@ -103,6 +110,8 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({ activeTab: tab, onTabCh
   const [newFee, setNewFee] = useState('0');
   const [newPhone, setNewPhone] = useState('');
   const [newDueDay, setNewDueDay] = useState('');
+  const [newNicho, setNewNicho] = useState('Barbearia');
+  const [newSubscriptionPlan, setNewSubscriptionPlan] = useState('START');
 
   // Edit modal
   const [editingTenant, setEditingTenant] = useState<Tenant | null>(null);
@@ -114,12 +123,18 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({ activeTab: tab, onTabCh
   // Client list filters
   const [clientSearch, setClientSearch] = useState('');
   const [clientStatusFilter, setClientStatusFilter] = useState('');
+  const [clientNichoFilter, setClientNichoFilter] = useState('');
 
   // Announcements
   const [announceTo, setAnnounceTo] = useState<'all' | 'active'>('active');
   const [announceMsg, setAnnounceMsg] = useState('');
   const [sendingAnnounce, setSendingAnnounce] = useState(false);
   const [announceResult, setAnnounceResult] = useState<{ ok: number; fail: number } | null>(null);
+
+  // AI usage
+  const [usagePeriod, setUsagePeriod] = useState<'today' | 'week' | 'month'>('week');
+  const [usageStats, setUsageStats] = useState<UsageSummary | null>(null);
+  const [usageLoading, setUsageLoading] = useState(false);
 
   // Billing
   const [billingReminders, setBillingReminders] = useState<BillingReminder[]>(loadBillingConfig);
@@ -128,6 +143,17 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({ activeTab: tab, onTabCh
 
   // Logs
   const [logs, setLogs] = useState<AdminLog[]>(loadAdminLogs);
+
+  // Admin WhatsApp + prospecção
+  const [adminInstanceName, setAdminInstanceName] = useState(() => loadAdminInstance());
+  const [adminConnected, setAdminConnected] = useState(false);
+  const [prospectCampaigns, setProspectCampaigns] = useState<ProspectCampaign[]>(() => loadCampaigns());
+  const [disparoCampaignId, setDisparoCampaignId] = useState<string | undefined>(undefined);
+
+  // Support inbox
+  type SupportRequest = { tenantId: string; tenantName: string; plan: string; request: { message: string; currentPlan: string; feature: string; ts: string; status: string } };
+  const [supportRequests, setSupportRequests] = useState<SupportRequest[]>([]);
+  const [supportLoading, setSupportLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -140,6 +166,41 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({ activeTab: tab, onTabCh
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  const loadUsage = useCallback(async () => {
+    setUsageLoading(true);
+    const stats = await fetchUsageStats(usagePeriod);
+    setUsageStats(stats);
+    setUsageLoading(false);
+  }, [usagePeriod]);
+
+  useEffect(() => { if (tab === 'ia') loadUsage(); }, [tab, loadUsage]);
+
+  const loadSupportRequests = useCallback(async () => {
+    setSupportLoading(true);
+    try {
+      const reqs = await (db as any).getAllSupportRequests();
+      setSupportRequests(reqs);
+    } catch (e) { console.error(e); }
+    finally { setSupportLoading(false); }
+  }, []);
+
+  useEffect(() => { if (tab === 'suporte') loadSupportRequests(); }, [tab, loadSupportRequests]);
+
+  const handleDismissSupport = async (tenantId: string) => {
+    await (db as any).dismissSupportRequest(tenantId);
+    setSupportRequests(prev => prev.filter(r => r.tenantId !== tenantId));
+  };
+
+  const handleCampaignsChange = (updated: ProspectCampaign[]) => {
+    setProspectCampaigns(updated);
+    saveCampaigns(updated);
+  };
+
+  const handleGoToDisparo = (campaignId: string) => {
+    setDisparoCampaignId(campaignId);
+    setTab('disparo' as Tab);
+  };
 
   // ── Create tenant ────────────────────────────────────────────────────────────
 
@@ -154,7 +215,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({ activeTab: tab, onTabCh
       const dueDay = parseInt(newDueDay) || undefined;
       const phone = newPhone.trim() || undefined;
 
-      const t = await db.addTenant({ name: newName, slug, email, password: pass, plan: 'BASIC', status: TenantStatus.ACTIVE, monthlyFee: fee });
+      const t = await db.addTenant({ name: newName, slug, email, password: pass, subscriptionPlan: newSubscriptionPlan, status: TenantStatus.ACTIVE, monthlyFee: fee, nicho: newNicho });
       if (phone || dueDay) await db.updateTenant(t.id, { phone, due_day: dueDay });
 
       try {
@@ -165,7 +226,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({ activeTab: tab, onTabCh
       } catch { /* Evolution timeout is non-fatal */ }
 
       setSuccessData({ email, pass, slug });
-      setNewName(''); setNewEmail(''); setNewPass(''); setNewFee('0'); setNewPhone(''); setNewDueDay('');
+      setNewName(''); setNewEmail(''); setNewPass(''); setNewFee('0'); setNewPhone(''); setNewDueDay(''); setNewNicho('Barbearia'); setNewSubscriptionPlan('START');
       saveAdminLog('TENANT_CREATED', `${newName} (${email})`);
       setLogs(loadAdminLogs());
       load();
@@ -187,6 +248,8 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({ activeTab: tab, onTabCh
         password: editingTenant.password,
         phone: editingTenant.phone,
         due_day: editingTenant.due_day,
+        nicho: editingTenant.nicho,
+        plan: editingTenant.plan,
       });
       saveAdminLog('TENANT_UPDATED', `${editingTenant.name}`);
       setLogs(loadAdminLogs());
@@ -288,6 +351,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({ activeTab: tab, onTabCh
   const filteredTenants = tenants.filter(t => {
     if (clientSearch && !t.name.toLowerCase().includes(clientSearch.toLowerCase()) && !t.email?.toLowerCase().includes(clientSearch.toLowerCase())) return false;
     if (clientStatusFilter && t.status !== clientStatusFilter) return false;
+    if (clientNichoFilter && ((t as any).nicho || 'Barbearia') !== clientNichoFilter) return false;
     return true;
   });
 
@@ -295,8 +359,8 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({ activeTab: tab, onTabCh
 
   const statusPieData = stats
     ? Object.entries(stats.byStatus || {})
-        .filter(([, v]) => v > 0)
-        .map(([k, v]) => ({ name: STATUS_LABELS[k] || k, value: v, color: STATUS_COLORS[k] || '#94a3b8' }))
+        .filter(([, v]) => (v as number) > 0)
+        .map(([k, v]) => ({ name: STATUS_LABELS[k] || k, value: v as number, color: STATUS_COLORS[k] || '#94a3b8' }))
     : [];
 
   const topTenantsByFee = [...tenants]
@@ -316,6 +380,7 @@ DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tenants' AND column_name='nome') THEN ALTER TABLE tenants ADD COLUMN nome TEXT; END IF;
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tenants' AND column_name='phone') THEN ALTER TABLE tenants ADD COLUMN phone TEXT; END IF;
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tenants' AND column_name='due_day') THEN ALTER TABLE tenants ADD COLUMN due_day INTEGER; END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tenants' AND column_name='nicho') THEN ALTER TABLE tenants ADD COLUMN nicho TEXT DEFAULT 'Barbearia'; END IF;
   IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tenants' AND column_name='evolution_instance') THEN ALTER TABLE tenants ALTER COLUMN evolution_instance DROP NOT NULL; END IF;
 END $$;
 
@@ -324,7 +389,32 @@ CREATE TABLE IF NOT EXISTS services (id UUID PRIMARY KEY DEFAULT gen_random_uuid
 CREATE TABLE IF NOT EXISTS customers (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id UUID REFERENCES tenants(id), nome TEXT, telefone TEXT NOT NULL, ativo BOOLEAN DEFAULT true, plan_id UUID, follow_up_mode TEXT);
 CREATE TABLE IF NOT EXISTS tenant_settings (tenant_id UUID PRIMARY KEY REFERENCES tenants(id), follow_up JSONB, operating_hours JSONB, ai_active BOOLEAN DEFAULT false, theme_color TEXT DEFAULT '#f97316');
 CREATE TABLE IF NOT EXISTS appointments (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id UUID REFERENCES tenants(id), customer_id UUID REFERENCES customers(id), professional_id UUID REFERENCES professionals(id), service_id UUID REFERENCES services(id), inicio TIMESTAMPTZ, fim TIMESTAMPTZ, status TEXT DEFAULT 'PENDING', origem TEXT DEFAULT 'WEB', payment_method TEXT, amount_paid NUMERIC, extra_note TEXT, extra_value NUMERIC);
-CREATE TABLE IF NOT EXISTS expenses (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id UUID REFERENCES tenants(id), description TEXT, amount NUMERIC, category TEXT, professional_id UUID REFERENCES professionals(id), date TIMESTAMPTZ DEFAULT now());`.trim();
+CREATE TABLE IF NOT EXISTS expenses (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id UUID REFERENCES tenants(id), description TEXT, amount NUMERIC, category TEXT, professional_id UUID REFERENCES professionals(id), date TIMESTAMPTZ DEFAULT now());
+
+-- ╔══════════════════════════════════════════════════════════════╗
+-- ║  TRACKING DE TOKENS DE IA — execute para habilitar o painel ║
+-- ╚══════════════════════════════════════════════════════════════╝
+CREATE TABLE IF NOT EXISTS ai_usage_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE NOT NULL,
+  phone_number TEXT,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  total_tokens INTEGER NOT NULL DEFAULT 0,
+  model TEXT NOT NULL DEFAULT 'gemini-2.0-flash',
+  estimated_cost_usd DECIMAL(12,8) DEFAULT 0,
+  success BOOLEAN DEFAULT true,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_tenant ON ai_usage_logs(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_date ON ai_usage_logs(created_at DESC);
+-- Habilitar RLS e acesso service_role:
+ALTER TABLE ai_usage_logs ENABLE ROW LEVEL SECURITY;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='ai_usage_logs' AND policyname='service_role_all') THEN
+    CREATE POLICY "service_role_all" ON ai_usage_logs FOR ALL TO service_role USING (true);
+  END IF;
+END $$;`.trim();
 
   if (loading || !stats) {
     return (
@@ -347,7 +437,7 @@ CREATE TABLE IF NOT EXISTS expenses (id UUID PRIMARY KEY DEFAULT gen_random_uuid
             onClick={() => { setShowNew(true); setSuccessData(null); }}
             className="bg-orange-500 text-white px-8 py-3 rounded-2xl font-black text-xs uppercase tracking-widest shadow-xl shadow-orange-100 hover:bg-black transition-all"
           >
-            + Nova Barbearia
+            + Nova Unidade
           </button>
         )}
       </div>
@@ -455,6 +545,14 @@ CREATE TABLE IF NOT EXISTS expenses (id UUID PRIMARY KEY DEFAULT gen_random_uuid
               <option value="">Todos os status</option>
               {Object.values(TenantStatus).map(s => <option key={s} value={s}>{STATUS_LABELS[s] || s}</option>)}
             </select>
+            <select
+              value={clientNichoFilter}
+              onChange={e => setClientNichoFilter(e.target.value)}
+              className="p-3 bg-white border border-slate-200 rounded-2xl text-sm font-semibold outline-none focus:border-orange-500"
+            >
+              <option value="">Todos os nichos</option>
+              {NICHOS.map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
           </div>
 
           {/* Table */}
@@ -463,16 +561,16 @@ CREATE TABLE IF NOT EXISTS expenses (id UUID PRIMARY KEY DEFAULT gen_random_uuid
               <table className="w-full">
                 <thead className="bg-slate-50 sticky top-0">
                   <tr>
-                    {['Empresa', 'Acesso', 'Telefone', 'Status', 'Mensalidade', 'Venc.', 'Ações'].map(h => (
+                    {['Empresa', 'Nicho', 'Plano', 'Acesso', 'Telefone', 'Status', 'Mensalidade', 'Venc.', 'Ações'].map(h => (
                       <th key={h} className="px-5 py-4 text-left text-[9px] font-black text-slate-400 uppercase tracking-widest">{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-50">
                   {filteredTenants.length === 0 ? (
-                    <tr><td colSpan={7} className="text-center py-12 text-slate-300 font-black uppercase text-xs">Nenhum cliente encontrado</td></tr>
+                    <tr><td colSpan={9} className="text-center py-12 text-slate-300 font-black uppercase text-xs">Nenhum cliente encontrado</td></tr>
                   ) : filteredTenants.map(t => (
-                    <tr key={t.id} className="hover:bg-slate-50/60 transition-colors">
+                    <tr key={t.id} className="hover:bg-slate-100 transition-colors">
                       <td className="px-5 py-4">
                         <div className="flex items-center gap-3">
                           <div className="w-9 h-9 bg-black text-white rounded-xl flex items-center justify-center font-black text-sm shrink-0">{t.name[0]}</div>
@@ -481,6 +579,16 @@ CREATE TABLE IF NOT EXISTS expenses (id UUID PRIMARY KEY DEFAULT gen_random_uuid
                             <p className="text-[9px] text-slate-400">{t.createdAt ? new Date(t.createdAt).toLocaleDateString('pt-BR') : ''}</p>
                           </div>
                         </div>
+                      </td>
+                      <td className="px-5 py-4">
+                        <span className="text-[9px] font-black px-2 py-1 bg-slate-100 text-slate-600 rounded-lg uppercase">{(t as any).nicho || 'Barbearia'}</span>
+                      </td>
+                      <td className="px-5 py-4">
+                        {(() => { const p = getPlanConfig(t.plan); return (
+                          <span className={`text-[9px] font-black px-2 py-1 rounded-lg uppercase border ${p.bgClass} ${p.textClass} ${p.borderClass}`}>
+                            {p.emoji} {p.name}
+                          </span>
+                        ); })()}
                       </td>
                       <td className="px-5 py-4">
                         <p className="text-[10px] font-black text-black">{t.email || '—'}</p>
@@ -496,7 +604,7 @@ CREATE TABLE IF NOT EXISTS expenses (id UUID PRIMARY KEY DEFAULT gen_random_uuid
                       <td className="px-5 py-4 text-sm font-black text-slate-600">{t.due_day ? `Dia ${t.due_day}` : '—'}</td>
                       <td className="px-5 py-4">
                         <div className="flex items-center gap-2">
-                          <button onClick={() => onImpersonate(t.id, t.name, t.slug)} className="px-3 py-1.5 bg-orange-50 text-orange-600 rounded-xl font-black text-[9px] uppercase hover:bg-orange-100 transition-all">
+                          <button onClick={() => onImpersonate(t.id, t.name, t.slug, t.plan)} className="px-3 py-1.5 bg-orange-50 text-orange-600 rounded-xl font-black text-[9px] uppercase hover:bg-orange-100 transition-all">
                             Acessar
                           </button>
                           <button onClick={() => setEditingTenant({ ...t })} className="px-3 py-1.5 bg-slate-100 text-slate-600 rounded-xl font-black text-[9px] uppercase hover:bg-slate-200 transition-all">
@@ -709,6 +817,192 @@ CREATE TABLE IF NOT EXISTS expenses (id UUID PRIMARY KEY DEFAULT gen_random_uuid
         </div>
       )}
 
+      {/* ══════════════════════ IA / TOKENS ══════════════════════ */}
+      {tab === 'ia' && (
+        <div className="space-y-6">
+          {/* Period selector + refresh */}
+          <div className="flex items-center gap-4 flex-wrap">
+            {(['today', 'week', 'month'] as const).map(p => (
+              <button key={p} onClick={() => setUsagePeriod(p)}
+                className={`px-5 py-2.5 rounded-2xl font-black text-[10px] uppercase tracking-widest border-2 transition-all ${usagePeriod === p ? 'bg-black text-white border-black' : 'border-slate-200 text-slate-400 hover:border-black hover:text-black'}`}>
+                {p === 'today' ? 'Hoje' : p === 'week' ? 'Última Semana' : 'Último Mês'}
+              </button>
+            ))}
+            <button onClick={loadUsage} disabled={usageLoading}
+              className="px-5 py-2.5 rounded-2xl font-black text-[10px] uppercase tracking-widest border-2 border-orange-300 text-orange-500 hover:bg-orange-50 transition-all disabled:opacity-40">
+              {usageLoading ? 'Atualizando...' : '↺ Atualizar'}
+            </button>
+          </div>
+
+          {/* Summary cards */}
+          {usageStats && (
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-5">
+              <StatCard label="Total de Tokens" value={usageStats.total_tokens.toLocaleString()} icon="🧠" />
+              <StatCard label="Custo Estimado" value={`$${usageStats.total_cost_usd.toFixed(4)}`} icon="💵" color="text-green-600" />
+              <StatCard label="Chamadas IA" value={usageStats.total_calls.toLocaleString()} icon="📡" />
+            </div>
+          )}
+
+          {/* Per-tenant table */}
+          <div className="bg-white rounded-3xl border border-slate-100 overflow-hidden">
+            <div className="overflow-x-auto overflow-y-auto max-h-[560px]">
+              <table className="w-full">
+                <thead className="bg-slate-50 sticky top-0">
+                  <tr>
+                    {['Tenant', 'Nicho', 'Tokens In', 'Tokens Out', 'Total', 'Custo (USD)', 'Chamadas', 'Última atividade'].map(h => (
+                      <th key={h} className="px-5 py-4 text-left text-[9px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {usageLoading ? (
+                    <tr><td colSpan={8} className="text-center py-12 text-slate-300 font-black uppercase text-xs">Carregando...</td></tr>
+                  ) : !usageStats || usageStats.by_tenant.length === 0 ? (
+                    <tr><td colSpan={8} className="text-center py-12 text-slate-300 font-black uppercase text-xs">
+                      Nenhum dado de uso encontrado.<br/>
+                      <span className="text-[9px] font-bold normal-case text-slate-300">Execute o script SQL para criar a tabela ai_usage_logs.</span>
+                    </td></tr>
+                  ) : usageStats.by_tenant.map(row => (
+                    <tr key={row.tenant_id} className="hover:bg-slate-50 transition-colors">
+                      <td className="px-5 py-4 font-black text-sm text-black">{row.tenant_name}</td>
+                      <td className="px-5 py-4">
+                        <span className="text-[9px] font-black px-2 py-1 bg-slate-100 text-slate-600 rounded-lg uppercase">{row.nicho}</span>
+                      </td>
+                      <td className="px-5 py-4 text-[11px] font-bold text-slate-600 text-right">{row.input_tokens.toLocaleString()}</td>
+                      <td className="px-5 py-4 text-[11px] font-bold text-slate-600 text-right">{row.output_tokens.toLocaleString()}</td>
+                      <td className="px-5 py-4 font-black text-sm text-black text-right">{row.total_tokens.toLocaleString()}</td>
+                      <td className="px-5 py-4 font-black text-sm text-green-600 text-right">${row.estimated_cost_usd.toFixed(4)}</td>
+                      <td className="px-5 py-4 text-[11px] font-bold text-slate-600 text-right">{row.calls.toLocaleString()}</td>
+                      <td className="px-5 py-4 text-[10px] font-bold text-slate-400 whitespace-nowrap">
+                        {row.last_activity ? new Date(row.last_activity).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="bg-blue-50 border border-blue-100 rounded-2xl p-5">
+            <p className="text-[10px] font-black text-blue-700 uppercase tracking-widest">ℹ️ Preços de referência</p>
+            <p className="text-xs text-blue-600 mt-1">GPT-4o Mini: $0,150/1M tokens entrada · $0,600/1M tokens saída &nbsp;|&nbsp; Gemini 2.0 Flash: gratuito (tier free)</p>
+          </div>
+        </div>
+      )}
+
+      {/* ══════════════════════ CONVERSAS ══════════════════════ */}
+      {tab === 'conversas' && (
+        <AdminConversasPanel
+          instanceName={adminInstanceName}
+          setInstanceName={setAdminInstanceName}
+          connected={adminConnected}
+          setConnected={setAdminConnected}
+        />
+      )}
+
+      {/* ══════════════════════ PROSPECÇÃO ══════════════════════ */}
+      {tab === 'prospeccao' && (
+        <AdminProspeccaoPanel
+          campaigns={prospectCampaigns}
+          onCampaignsChange={handleCampaignsChange}
+          onGoToDisparo={handleGoToDisparo}
+        />
+      )}
+
+      {/* ══════════════════════ DISPARADOR ADMIN ══════════════════════ */}
+      {tab === 'disparo' && (
+        <AdminDisparoPanel
+          adminInstanceName={adminInstanceName}
+          adminConnected={adminConnected}
+          campaigns={prospectCampaigns}
+          initialCampaignId={disparoCampaignId}
+          onGoToConexao={() => setTab('conversas' as Tab)}
+        />
+      )}
+
+      {/* ══════════════════════ SUPORTE ══════════════════════ */}
+      {tab === 'suporte' && (() => {
+        const SUPPORT_FEATURE_LABELS: Record<string, string> = {
+          financeiro: 'Financeiro e Estoque',
+          relatorios: 'Relatórios básicos',
+          relatoriosAvancados: 'Relatórios avançados',
+          reativacao: 'Reativação automática',
+          disparo: 'Disparador segmentado',
+          assistenteAdmin: 'Assistente Admin via IA',
+        };
+        return (
+          <div className="space-y-6">
+            <div className="flex items-center justify-between">
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                Solicitações pendentes de upgrade de plano
+              </p>
+              <button
+                onClick={loadSupportRequests}
+                className="text-[10px] font-black text-orange-500 uppercase tracking-widest hover:underline"
+              >
+                ↻ Atualizar
+              </button>
+            </div>
+
+            {supportLoading ? (
+              <div className="flex items-center gap-4 p-12">
+                <div className="w-6 h-6 border-4 border-slate-100 border-t-orange-500 rounded-full animate-spin" />
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Carregando solicitações...</p>
+              </div>
+            ) : supportRequests.length === 0 ? (
+              <div className="bg-white rounded-[32px] border-2 border-slate-100 p-16 text-center space-y-3">
+                <p className="text-5xl">📭</p>
+                <p className="font-black text-slate-400 text-sm uppercase tracking-wider">Nenhuma solicitação pendente</p>
+                <p className="text-xs text-slate-300 font-bold">As solicitações de upgrade dos clientes aparecerão aqui.</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {supportRequests.map(({ tenantId, tenantName, plan, request }) => {
+                  const planCfg = getPlanConfig(plan);
+                  return (
+                    <div key={tenantId} className="bg-white rounded-[24px] border-2 border-slate-100 p-6 space-y-3 hover:border-orange-200 transition-all">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1.5 flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className="font-black text-black text-sm">{tenantName}</p>
+                            <span className={`text-[9px] font-black px-2 py-0.5 rounded-full uppercase ${planCfg.bgClass} ${planCfg.textClass}`}>
+                              {planCfg.emoji} {planCfg.name}
+                            </span>
+                          </div>
+                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                            Recurso solicitado:{' '}
+                            <strong className="text-slate-600">
+                              {SUPPORT_FEATURE_LABELS[request.feature] || request.feature}
+                            </strong>
+                          </p>
+                          {request.message && request.message !== 'Solicitar upgrade de plano' && (
+                            <p className="text-sm font-bold text-slate-600 bg-slate-50 rounded-xl p-3 border border-slate-100 italic">
+                              "{request.message}"
+                            </p>
+                          )}
+                          <p className="text-[9px] font-bold text-slate-300">
+                            {new Date(request.ts).toLocaleString('pt-BR', {
+                              day: '2-digit', month: '2-digit', year: 'numeric',
+                              hour: '2-digit', minute: '2-digit'
+                            })}
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => handleDismissSupport(tenantId)}
+                          className="shrink-0 px-4 py-2 bg-green-500 text-white rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-green-600 transition-all"
+                        >
+                          ✓ Resolver
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {/* ══════════════════════ MODALS ══════════════════════ */}
 
       {/* New tenant modal */}
@@ -718,10 +1012,10 @@ CREATE TABLE IF NOT EXISTS expenses (id UUID PRIMARY KEY DEFAULT gen_random_uuid
             <div className="bg-white rounded-[40px] w-full max-w-md p-12 space-y-8 animate-scaleUp border-4 border-black">
               {!successData ? (
                 <>
-                  <h2 className="text-2xl font-black text-black uppercase tracking-tight">Nova Barbearia</h2>
+                  <h2 className="text-2xl font-black text-black uppercase tracking-tight">Nova Unidade</h2>
                   <div className="space-y-4">
                     {([
-                      ['Nome da Barbearia *', newName, setNewName, 'text', 'Ex: Barber Centro'],
+                      ['Nome da unidade *', newName, setNewName, 'text', 'Ex: Barber Centro'],
                       ['E-mail (auto se vazio)', newEmail, setNewEmail, 'email', 'email@exemplo.com'],
                       ['Senha (auto se vazio)', newPass, setNewPass, 'text', 'Senha123'],
                       ['Telefone do proprietário', newPhone, setNewPhone, 'text', '5511999999999'],
@@ -732,6 +1026,31 @@ CREATE TABLE IF NOT EXISTS expenses (id UUID PRIMARY KEY DEFAULT gen_random_uuid
                           className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none font-bold text-sm focus:border-orange-500" />
                       </div>
                     ))}
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-4">Nicho / Segmento</label>
+                      <select value={newNicho} onChange={e => setNewNicho(e.target.value)}
+                        className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none font-bold text-sm focus:border-orange-500">
+                        {NICHOS.map(n => <option key={n} value={n}>{n}</option>)}
+                      </select>
+                    </div>
+                    {/* Plan selector */}
+                    <div className="space-y-2">
+                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-4">Plano de Assinatura</label>
+                      <div className="grid grid-cols-3 gap-2">
+                        {Object.values(PLAN_CONFIGS).map(p => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => setNewSubscriptionPlan(p.id)}
+                            className={`p-3 rounded-2xl border-2 text-center transition-all ${newSubscriptionPlan === p.id ? `${p.bgClass} ${p.borderClass}` : 'bg-white border-slate-100 hover:border-slate-300'}`}
+                          >
+                            <p className="text-lg">{p.emoji}</p>
+                            <p className={`text-[10px] font-black uppercase ${newSubscriptionPlan === p.id ? p.textClass : 'text-slate-500'}`}>{p.name}</p>
+                            <p className={`text-[9px] font-bold ${newSubscriptionPlan === p.id ? p.textClass : 'text-slate-400'}`}>R${p.price.toFixed(2).replace('.', ',')}</p>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                     <div className="grid grid-cols-2 gap-4">
                       <div className="space-y-1">
                         <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-4">Mensalidade (R$)</label>
@@ -808,6 +1127,34 @@ CREATE TABLE IF NOT EXISTS expenses (id UUID PRIMARY KEY DEFAULT gen_random_uuid
                   <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-4">Mensalidade (R$)</label>
                   <input type="number" value={editingTenant.monthlyFee} onChange={e => setEditingTenant({ ...editingTenant, monthlyFee: parseFloat(e.target.value) || 0 })}
                     className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none font-bold text-sm focus:border-orange-500" />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-4">Nicho / Segmento</label>
+                  <select value={(editingTenant as any).nicho || 'Barbearia'} onChange={e => setEditingTenant({ ...editingTenant, nicho: e.target.value } as Tenant)}
+                    className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none font-bold text-sm focus:border-orange-500">
+                    {NICHOS.map(n => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                </div>
+                {/* Plan selector */}
+                <div className="space-y-2">
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-4">Plano de Assinatura</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {Object.values(PLAN_CONFIGS).map(p => {
+                      const currentPlanId = getPlanConfig(editingTenant?.plan).id;
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => setEditingTenant({ ...editingTenant!, plan: p.id })}
+                          className={`p-3 rounded-2xl border-2 text-center transition-all ${currentPlanId === p.id ? `${p.bgClass} ${p.borderClass}` : 'bg-white border-slate-100 hover:border-slate-300'}`}
+                        >
+                          <p className="text-lg">{p.emoji}</p>
+                          <p className={`text-[10px] font-black uppercase ${currentPlanId === p.id ? p.textClass : 'text-slate-500'}`}>{p.name}</p>
+                          <p className={`text-[9px] font-bold ${currentPlanId === p.id ? p.textClass : 'text-slate-400'}`}>R${p.price.toFixed(2).replace('.', ',')}</p>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
               <div className="flex gap-4">

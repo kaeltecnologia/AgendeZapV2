@@ -10,6 +10,8 @@ import { supabase } from './supabase';
 import { db } from './mockDb';
 import { AppointmentStatus, BookingSource, BreakPeriod } from '../types';
 import { sendProfessionalNotification } from './notificationService';
+import { nichoConfigs, isBarbearia } from '../config/nichoConfigs';
+import { logAIUsage, estimateTokens } from './usageTracker';
 
 // =====================================================================
 // TYPES
@@ -33,6 +35,23 @@ interface SessionData {
   availableSlots?: string[];
   pendingConfirm?: boolean;       // summary shown, waiting for yes/no
   pendingCancelReason?: boolean;  // asked for cancel reason, waiting for it
+  // Follow-up context: set when system sends aviso/lembrete/reativacao to this phone
+  pendingFollowUpType?: 'aviso' | 'lembrete' | 'reativacao';
+  followUpApptTime?: string;     // HH:MM of the booked appointment (for reply context)
+  followUpServiceName?: string;  // service name (for reply context)
+  // Group booking (client + companion)
+  groupBooking?: {
+    active: boolean;
+    companionDesc?: string;            // "minha esposa", "meu filho", etc.
+    sameService?: boolean;             // both want same service?
+    companionServiceId?: string;
+    companionServiceName?: string;
+    companionServiceDuration?: number;
+    resolvedMode?: 'consecutive' | 'parallel'; // how the 2nd slot was resolved
+    companion2ProfId?: string;         // 2nd professional (parallel mode)
+    companion2ProfName?: string;
+    companion2Time?: string;           // 2nd appointment time (consecutive mode)
+  };
 }
 
 interface Session {
@@ -72,6 +91,32 @@ function saveSession(session: Session): void {
 
 function clearSession(tenantId: string, phone: string): void {
   sessions.delete(sessionKey(tenantId, phone));
+}
+
+// ── Called by followUpService after each successful send ─────────────
+// Registers context so the next client reply is handled in the right tone.
+export function registerFollowUpContext(
+  tenantId: string,
+  phone: string,
+  type: 'aviso' | 'lembrete' | 'reativacao',
+  sentMessage: string,
+  ctx?: { apptTime?: string; serviceName?: string; clientName?: string }
+): void {
+  const key = sessionKey(tenantId, phone);
+  let sess = sessions.get(key);
+  if (!sess) {
+    sess = { tenantId, phone, data: {} as SessionData, history: [], updatedAt: Date.now() };
+  }
+  sess.data.pendingFollowUpType = type;
+  if (ctx?.apptTime)     sess.data.followUpApptTime    = ctx.apptTime;
+  if (ctx?.serviceName)  sess.data.followUpServiceName = ctx.serviceName;
+  if (ctx?.clientName && !sess.data.clientName) sess.data.clientName = ctx.clientName;
+  // Add the system message to history so the AI has full context if needed
+  sess.history.push({ role: 'bot', text: sentMessage });
+  if (sess.history.length > 20) sess.history = sess.history.slice(-20);
+  sess.updatedAt = Date.now();
+  sessions.set(key, sess);
+  console.log(`[Agent] Follow-up context registered: ${type} → ${phone}`);
 }
 
 // =====================================================================
@@ -199,6 +244,9 @@ interface BrainOutput {
     time?: string | null;
     confirmed?: boolean | null;
     cancelled?: boolean | null;
+    groupIntent?: boolean | null;       // client wants to book for 2+ people
+    sameService?: boolean | null;       // both want the same service
+    companionServiceId?: string | null; // companion's service if different
   };
 }
 
@@ -211,7 +259,14 @@ async function callBrain(
   history: HistoryEntry[],
   data: SessionData,
   availableSlots?: string[],
-  customSystemPrompt?: string
+  customSystemPrompt?: string,
+  shouldGreet?: boolean,
+  brasiliaGreeting?: string,
+  groupCtx?: string,
+  nichoName?: string,
+  tenantId?: string,
+  phone?: string,
+  isAudio?: boolean
 ): Promise<BrainOutput | null> {
 
   const svcList = services.map(s =>
@@ -229,6 +284,20 @@ async function callBrain(
   if (data.date) known.push(`Data: ${formatDate(data.date)}`);
   if (data.time) known.push(`Horário: ${data.time}`);
 
+  const followUpCtx = data.pendingFollowUpType === 'reativacao'
+    ? `\n📩 CONTEXTO ESPECIAL — RECUPERAÇÃO DE CLIENTE INATIVO:
+• O cliente estava ausente e recebeu uma mensagem de reativação.
+• Se a resposta for positiva/afirmativa → Mostre entusiasmo em recebê-lo de volta e IMEDIATAMENTE pergunte quando quer agendar (ex: "Que ótimo ter você de volta! 😊 Quando prefere vir? Temos horários disponíveis essa semana!").
+• Se demonstrar interesse em serviço → inicie o fluxo de agendamento diretamente.
+• Se negar ou não quiser → despeça-se com simpatia, deixe porta aberta.\n`
+    : (data.pendingFollowUpType === 'aviso' || data.pendingFollowUpType === 'lembrete')
+    ? `\n📩 CONTEXTO ESPECIAL — ${data.pendingFollowUpType === 'aviso' ? 'CHECK-IN DIÁRIO' : 'LEMBRETE DE AGENDAMENTO'}:
+• Cliente tem agendamento${data.followUpApptTime ? ` às ${data.followUpApptTime}` : ''} e respondeu ao lembrete.
+• Se confirmar presença → responda com entusiasmo confirmando o horário.
+• Se quiser reagendar ou tiver dúvida → ajude imediatamente.
+• NÃO inicie novo agendamento a menos que o cliente peça explicitamente.\n`
+    : '';
+
   const slotsSection = availableSlots && availableSlots.length > 0
     ? `\nHORÁRIOS DISPONÍVEIS (use APENAS estes):\n${availableSlots.slice(0, 12).map(s => `• ${s}`).join('\n')}`
     : (data.professionalId && data.date
@@ -241,55 +310,102 @@ async function callBrain(
 
   const isFirstMessage = history.filter(h => h.role === 'bot').length === 0;
 
-  const prompt = `Você é o assistente de agendamentos de "${tenantName}". Hoje é ${today}. Responda SEMPRE em português brasileiro informal e natural.
-${customSystemPrompt ? `\n--- PERSONALIDADE E REGRAS DO ESTABELECIMENTO ---\n${customSystemPrompt}\n--- FIM ---\n` : ''}
+  const greetSection = shouldGreet
+    ? `\n🌅 SAUDAÇÃO DO DIA (OBRIGATÓRIA): Esta é a primeira interação com este cliente hoje. Inicie sua resposta com "${brasiliaGreeting}!" de forma natural e calorosa (ex: "${brasiliaGreeting}, tudo bem? 😊"). Faça isso UMA VEZ APENAS — nunca repita a saudação em outras respostas.\n`
+    : '';
 
-SERVIÇOS DISPONÍVEIS:
-${svcList}
+  const groupSection = groupCtx
+    ? `\n👥 AGENDAMENTO EM GRUPO:\n${groupCtx}\n`
+    : '';
 
-PROFISSIONAIS DISPONÍVEIS:
-${profList}
-${slotsSection}
+  // ── Nicho-aware sections ─────────────────────────────────────────────
+  const nicho = nichoName || 'Barbearia';
+  const cfg = nichoConfigs[nicho as keyof typeof nichoConfigs] ?? nichoConfigs['Barbearia'];
+  const isBrb = isBarbearia(nicho);
 
-INFORMAÇÕES JÁ COLETADAS (NÃO pergunte novamente sobre estas):
-${known.length > 0 ? known.join('\n') : '(nenhuma ainda)'}
-${data.pendingConfirm ? '\n⚠️ ATENÇÃO: O resumo do agendamento JÁ foi mostrado. Se o cliente responder "sim", "ok", "pode", "confirmo", "isso", "beleza", "certo", "fechado", "tá", "ta", "bora", "quero" ou qualquer afirmação → defina "confirmed": true OBRIGATORIAMENTE e gere mensagem de aguardo. NÃO volte a pedir confirmação.' : ''}
+  // Intro line (after tenant name)
+  const introLinha = cfg.introLinha;
 
-HISTÓRICO DA CONVERSA (mais recente no final):
+  // Tom line inside FORMATO OBRIGATÓRIO
+  const tomLine = cfg.tomFormatado;
+
+  // Emojis hint
+  const emojisHint = cfg.emojisHint;
+
+  // Nicho-specific rules (appended to CASOS ESPECIAIS)
+  const nichoRulesSection = (!isBrb && cfg.regrasEspecificas.length > 0)
+    ? `\n🏷️ REGRAS DO NICHO (${nicho}):\n${cfg.regrasEspecificas.map((r, i) => `${i + 1}. ${r}`).join('\n')}\n`
+    : '';
+
+  // Desistência / mudança de ideia — adapt farewell phrase for non-barbearia
+  const farewellLine = isBrb
+    ? '• "Fechou meu querido! Até a próxima 😊"'
+    : '• Despeça-se com simpatia e deixe a porta aberta para um novo agendamento';
+
+  const audioNote = isAudio
+    ? `\n🎵 MENSAGEM POR ÁUDIO: A última mensagem do cliente foi enviada como áudio e transcrita automaticamente. Pode conter pequenas imprecisões de fala — interprete com flexibilidade. Responda normalmente, sem mencionar o áudio.\n`
+    : '';
+
+  const prompt = `Você é o ATENDENTE DE WHATSAPP de "${tenantName}". Hoje é ${today}.
+${introLinha}
+${customSystemPrompt ? `\n--- REGRAS DO ESTABELECIMENTO ---\n${customSystemPrompt}\n---\n` : ''}${followUpCtx}${audioNote}${greetSection}${groupSection}
+SERVIÇOS: ${svcList}
+PROFISSIONAIS: ${profList}${slotsSection}
+
+CONTEXTO ATUAL: ${known.length > 0 ? known.join(' | ') : 'nenhuma informação coletada ainda'}
+${data.pendingConfirm ? '\n⚠️ RESUMO JÁ MOSTRADO — se cliente afirmar ("sim","ok","pode","beleza","bora","fechou","isso","confirma") → "confirmed":true OBRIGATORIAMENTE.' : ''}
+
+HISTÓRICO (mais recente no final):
 ${histStr}
 
-═══════════════════════════════════════
-REGRAS DE EXTRAÇÃO — SIGA À RISCA:
-═══════════════════════════════════════
-${isFirstMessage ? '• Esta é a PRIMEIRA mensagem — cumprimente o cliente pelo nome (se conhecido) e processe a solicitação.\n' : ''}
-• SEMPRE analise o histórico COMPLETO, não apenas a última mensagem
-• Extraia horários em texto: "nove horas"→"09:00", "dez da manhã"→"10:00", "três da tarde"→"15:00", "duas"→"14:00"
-• Se o cliente já deu serviço + profissional + data + horário em mensagens anteriores → VEJA "INFORMAÇÕES JÁ COLETADAS"
-• NUNCA repita perguntas sobre info que já está em "INFORMAÇÕES JÁ COLETADAS"
+════════════════════════════════
+COMO RESPONDER — APRENDA COM HUMANOS:
+════════════════════════════════
 
-LÓGICA DE RESPOSTA:
-1. Se TODAS as infos estão coletadas (serviço + profissional + data + horário) → mostre o RESUMO e peça confirmação
-2. Se falta apenas UMA info → peça só ela, confirmando o resto
-3. Se falta MAIS de uma info mas o cliente deu tudo de uma vez → agradeça e mostre o resumo
-4. Se o horário pedido não está na lista de disponíveis → ofereça os 2-3 mais próximos
-5. NÃO invente horários — use APENAS os da lista de disponíveis
-6. ✅ CONFIRMAÇÃO: Se resumo já foi apresentado E cliente responde afirmativamente ("sim","ok","pode","confirmo","isso","beleza","certo","bora","quero","claro","tá bom") → "confirmed": true. NÃO peça confirmação de novo.
+📏 FORMATO OBRIGATÓRIO:
+• Máximo 2-3 linhas por mensagem
+${tomLine}
+• 1 emoji no máximo ${emojisHint}
+• SEMPRE termine com pergunta curta ou confirmação
 
-TOM: Natural, humano, brasileiro. Máximo 3 linhas. 1-2 emojis.
+${isFirstMessage ? '📥 PRIMEIRA MENSAGEM: processe tudo que o cliente já informou (nome, serviço, etc.) sem perguntar de novo.\n' : ''}
+📅 AO OFERECER HORÁRIO:
+• ❌ ERRADO: "Temos disponível às 15:00"
+• ✅ CERTO: "Com o Matheus às 15:00 pode ser? 😊"
+• Sempre: PROFISSIONAL + HORÁRIO + "pode ser?" ou "serve?"
+
+❌ QUANDO O HORÁRIO PEDIDO NÃO ESTÁ DISPONÍVEL:
+1. Explique brevemente por quê: "Após as 18h não teria essa semana"
+2. Ofereça o mais próximo: "Mas teria amanhã às 17:00"
+3. Pergunte: "Serve??" — NUNCA assuma aceitação
+
+✅ QUANDO CLIENTE CONFIRMA (sim/ok/pode/beleza/bora/isso):
+• Defina "confirmed":true — o sistema gravará automaticamente
+• Responda apenas: "Agendado! Te esperamos 😊" ou "Fechou! 👍"
+
+🔄 QUANDO CLIENTE MUDA DE IDEIA OU DESISTE:
+${farewellLine}
+• Sem drama, aceite naturalmente
+
+💡 CASOS ESPECIAIS:
+• 2 serviços juntos → verifique se existe combo no cardápio, senão use o de maior duração
+• 2 pessoas → siga as instruções do bloco 👥 AGENDAMENTO EM GRUPO acima
+• 2 profissionais opcionais ("Matheus ou Felipe") → escolha o que tiver horário disponível
+• Preço perguntado → informe direto: "O serviço está R$40,00"
+• Agenda cheia → "Essa semana tá cheio, mas semana que vem teria. Vamos agendar?"
+${nichoRulesSection}
+════════════════════════════════
+EXTRAÇÃO DE DADOS:
+════════════════════════════════
+• Horários em texto: "nove horas"→"09:00", "dez da manhã"→"10:00", "três da tarde"→"15:00", "meio dia"→"12:00"
+• NUNCA repita perguntas sobre info já coletada no CONTEXTO ATUAL
+• Use horários SOMENTE da lista disponível — nunca invente
+• groupIntent: true se cliente mencionou agendar para mais de uma pessoa
+• sameService: true/false se souber se as pessoas vão fazer o mesmo procedimento
+• companionServiceId: ID do serviço do acompanhante (quando diferente do cliente)
 
 RESPONDA APENAS COM JSON VÁLIDO (sem markdown, sem \`\`\`):
-{
-  "reply": "sua mensagem natural para o cliente",
-  "extracted": {
-    "clientName": null,
-    "serviceId": null,
-    "professionalId": null,
-    "date": null,
-    "time": null,
-    "confirmed": null,
-    "cancelled": null
-  }
-}`;
+{"reply":"...","extracted":{"clientName":null,"serviceId":null,"professionalId":null,"date":null,"time":null,"confirmed":null,"cancelled":null,"groupIntent":null,"sameService":null,"companionServiceId":null}}`;
 
   try {
     if (apiKey.startsWith('sk-')) {
@@ -312,7 +428,19 @@ RESPONDA APENAS COM JSON VÁLIDO (sem markdown, sem \`\`\`):
         return null;
       }
       const d = await res.json();
-      return JSON.parse(d.choices?.[0]?.message?.content || 'null') as BrainOutput;
+      const result = JSON.parse(d.choices?.[0]?.message?.content || 'null') as BrainOutput;
+      // ── Token tracking ──────────────────────────────────────────────
+      if (tenantId) {
+        logAIUsage({
+          tenant_id: tenantId,
+          phone_number: phone,
+          input_tokens:  d.usage?.prompt_tokens     ?? estimateTokens(prompt),
+          output_tokens: d.usage?.completion_tokens ?? estimateTokens(result?.reply ?? ''),
+          model: 'gpt-4o-mini',
+          success: !!result,
+        }).catch(() => {});
+      }
+      return result;
 
     } else {
       // Gemini REST API
@@ -332,12 +460,118 @@ RESPONDA APENAS COM JSON VÁLIDO (sem markdown, sem \`\`\`):
       }
       const d = await res.json();
       const text = d.candidates?.[0]?.content?.parts?.[0]?.text || 'null';
-      return JSON.parse(text) as BrainOutput;
+      const result = JSON.parse(text) as BrainOutput;
+      // ── Token tracking ──────────────────────────────────────────────
+      if (tenantId) {
+        const usage = d.usageMetadata;
+        logAIUsage({
+          tenant_id: tenantId,
+          phone_number: phone,
+          input_tokens:  usage?.promptTokenCount     ?? estimateTokens(prompt),
+          output_tokens: usage?.candidatesTokenCount ?? estimateTokens(result?.reply ?? ''),
+          model: 'gemini-2.0-flash',
+          success: !!result,
+        }).catch(() => {});
+      }
+      return result;
     }
   } catch (e: any) {
     console.error('[callBrain] Parse/network error:', e.message);
     return null;
   }
+}
+
+// =====================================================================
+// BRASÍLIA GREETING — time-aware, once per day per phone
+// =====================================================================
+
+// Tracks which phones were greeted today (Brasília time). Lives for the browser session.
+const _greetedToday = new Map<string, string>(); // "tenantId::phone" → "YYYY-MM-DD"
+
+function getBrasiliaGreeting(): { greeting: string; dateStr: string } {
+  // Brasília = UTC-3
+  const b = new Date(Date.now() - 3 * 60 * 60 * 1000);
+  const h = b.getUTCHours();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return {
+    greeting: h < 12 ? 'bom dia' : h < 18 ? 'boa tarde' : 'boa noite',
+    dateStr: `${b.getUTCFullYear()}-${pad(b.getUTCMonth() + 1)}-${pad(b.getUTCDate())}`,
+  };
+}
+
+// =====================================================================
+// GROUP BOOKING HELPERS
+// =====================================================================
+
+/** Returns the group booking prompt context based on current session state. */
+function buildGroupCtx(data: SessionData): string {
+  const gb = data.groupBooking;
+  if (!gb?.active) return '';
+
+  const lines: string[] = [`Cliente quer agendar para si e para ${gb.companionDesc || 'um acompanhante'}.`];
+
+  if (gb.sameService === undefined) {
+    lines.push('PERGUNTA PENDENTE: "Os dois vão fazer o mesmo procedimento?"');
+  } else if (!gb.companionServiceId) {
+    lines.push('PERGUNTA PENDENTE: Qual serviço o acompanhante vai fazer? (liste os disponíveis)');
+  } else if (gb.resolvedMode === 'consecutive' && gb.companion2Time) {
+    lines.push(`SOLUÇÃO ENCONTRADA: mesmo profissional (${data.professionalName}) em horários consecutivos — pessoa 1 às ${data.time}, acompanhante às ${gb.companion2Time}. Apresente ao cliente e peça confirmação.`);
+  } else if (gb.resolvedMode === 'parallel' && gb.companion2ProfName) {
+    lines.push(`SOLUÇÃO ENCONTRADA: dois profissionais no mesmo horário — ${data.professionalName} às ${data.time} (cliente) e ${gb.companion2ProfName} às ${data.time} (acompanhante). Apresente ao cliente e peça confirmação.`);
+  } else if (data.time && !gb.resolvedMode) {
+    lines.push(`PROBLEMA: não há dois horários disponíveis neste horário/dia. Explique com simpatia e sugira outro horário ou outro dia. Ou, se tiver outro profissional disponível no mesmo horário, proponha a divisão ("Podemos marcar você com ${data.professionalName} e o(a) acompanhante com outro profissional às ${data.time}, pode ser?").`);
+  } else {
+    lines.push('Colete profissional + data + horário normalmente. O sistema resolverá o segundo horário automaticamente após você coletar esses dados.');
+  }
+
+  return lines.join(' ');
+}
+
+/** Tries to resolve the companion's slot (consecutive or parallel). */
+async function resolveGroupBooking(
+  tenantId: string,
+  data: SessionData,
+  allProfessionals: Array<{ id: string; name: string }>,
+): Promise<NonNullable<SessionData['groupBooking']>> {
+  const gb = data.groupBooking!;
+  const duration1 = data.serviceDuration!;
+  const duration2 = gb.companionServiceDuration || duration1;
+  const date = data.date!;
+  const time = data.time!;
+  const profId = data.professionalId!;
+
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const addMinutesToTime = (t: string, min: number): string => {
+    const [h, m] = t.split(':').map(Number);
+    const total = h * 60 + m + min;
+    return `${pad(Math.floor(total / 60) % 24)}:${pad(total % 60)}`;
+  };
+
+  const time2 = addMinutesToTime(time, duration1);
+
+  // Try consecutive: same professional, slot right after person 1
+  const { available: canConsec } = await db.isSlotAvailable(
+    tenantId, profId, new Date(`${date}T${time2}:00`), duration2
+  );
+  if (canConsec) {
+    console.log(`[Group] Consecutive resolved: ${time} + ${time2}`);
+    return { ...gb, resolvedMode: 'consecutive', companion2Time: time2 };
+  }
+
+  // Try parallel: another professional free at the same time
+  const others = allProfessionals.filter(p => p.id !== profId);
+  for (const op of others) {
+    const { available: canParallel } = await db.isSlotAvailable(
+      tenantId, op.id, new Date(`${date}T${time}:00`), duration2
+    );
+    if (canParallel) {
+      console.log(`[Group] Parallel resolved: ${data.professionalName} + ${op.name} at ${time}`);
+      return { ...gb, resolvedMode: 'parallel', companion2ProfId: op.id, companion2ProfName: op.name };
+    }
+  }
+
+  console.log(`[Group] No resolution found for ${date} ${time}`);
+  return gb; // resolvedMode stays undefined → prompt will explain the issue
 }
 
 // =====================================================================
@@ -369,7 +603,8 @@ export async function handleMessage(
   tenant: any,
   phone: string,
   messageText: string,
-  pushName?: string
+  pushName?: string,
+  options?: { isAudio?: boolean }
 ): Promise<string | null> {
   const tenantId: string = tenant.id;
   const tenantName: string = tenant.nome || tenant.name || 'Barbearia';
@@ -425,6 +660,65 @@ export async function handleMessage(
     sess.data.pendingCancelReason = true;
     saveSession(sess as Session);
     return `Que pena que precisou cancelar! 😕\n\nPode nos contar o motivo? Isso nos ajuda a melhorar o atendimento. 🙏`;
+  }
+
+  // ─── Follow-up context reply ─────────────────────────────────────────
+  // When the system (followUpService) sends aviso/lembrete/reativacao, it registers
+  // context in the session. The next reply from that phone is handled here so the AI
+  // doesn't treat it as a new booking attempt.
+  if (preSession?.data?.pendingFollowUpType) {
+    const fType = preSession.data.pendingFollowUpType;
+    const norm  = lowerText.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[.,!?]/g, '').trim();
+    const wds   = norm.split(/\s+/);
+
+    const AFFIRM = [
+      'sim', 'ok', 'pode', 'certo', 'fechado', 'confirmado', 'confirmar', 'quero',
+      'bora', 'beleza', 'combinado', 'claro', 'exato', 'correto', 'perfeito',
+      'otimo', 'obrigado', 'obrigada', 'vlw', 'valeu', 'vou', 'estarei',
+      'ta', 'tá', 'yes', 'vamos', 'sure', 'blz', 'ótimo', 'show', 'certo',
+      'tenho', 'consigo', 'posso', 'afirmativo', 'certeza', 'com certeza',
+      'até lá', 'ate la', 'estarei lá', 'estarei la', 'boa', 'tô lá', 'to la',
+    ];
+    const DENY = [
+      'nao', 'não', 'nao posso', 'não posso', 'nope', 'negativo', 'impossivel',
+      'impossível', 'nao vou', 'não vou', 'nao consigo', 'não consigo',
+      'nao quero', 'não quero', 'cancela', 'cancelar',
+    ];
+    // Extra guard: don't intercept if client clearly wants to reschedule/book
+    const hasBookingIntent = ['agendar', 'marcar', 'horario', 'horário', 'mudar', 'trocar', 'reagendar'].some(k => norm.includes(k));
+
+    const isAffirm = !hasBookingIntent && AFFIRM.some(a => wds.includes(a) || norm === a);
+    const isDeny   = DENY.some(d => wds.includes(d));
+
+    // ── aviso / lembrete: short affirmative → just confirm presence ───
+    if ((fType === 'aviso' || fType === 'lembrete') && isAffirm && wds.length <= 8) {
+      const fp0 = makeFingerprint(tenantId, phone, text);
+      if (isLocalDuplicate(fp0)) return null;
+      const apptTime = preSession.data.followUpApptTime;
+      const reply = apptTime
+        ? `Perfeito! Aguardamos você às *${apptTime}*! 😊`
+        : `Perfeito! Aguardamos você! 😊`;
+      preSession.data.pendingFollowUpType = undefined;
+      preSession.history.push({ role: 'user', text }, { role: 'bot', text: reply });
+      saveSession(preSession);
+      return reply;
+    }
+
+    // ── reativacao: short denial → polite dismissal ────────────────────
+    if (fType === 'reativacao' && isDeny && wds.length <= 6) {
+      const fp0 = makeFingerprint(tenantId, phone, text);
+      if (isLocalDuplicate(fp0)) return null;
+      const reply = `Tudo bem! Quando precisar, é só chamar. 😊`;
+      preSession.data.pendingFollowUpType = undefined;
+      preSession.history.push({ role: 'user', text }, { role: 'bot', text: reply });
+      saveSession(preSession);
+      return reply;
+    }
+
+    // ── Anything else (long msg, ambiguous, reativacao+positive):
+    // Clear the flag and fall through — AI has full history context.
+    preSession.data.pendingFollowUpType = undefined;
+    saveSession(preSession);
   }
 
   // ─── Dedup ─────────────────────────────────────────────────────────
@@ -485,6 +779,38 @@ export async function handleMessage(
     // No early return — fall through so callBrain processes first message naturally
   }
 
+  // ─── Brasília greeting ──────────────────────────────────────────────
+  const { greeting: brasiliaGreeting, dateStr: brasiliaDate } = getBrasiliaGreeting();
+  const _greetKey = `${tenantId}::${phone}`;
+  const shouldGreet = _greetedToday.get(_greetKey) !== brasiliaDate;
+
+  // ─── Detect group booking intent from keywords ────────────────────────
+  const groupKeywords = ['eu e ', 'pra mim e', 'para mim e', 'minha esposa', 'meu esposo',
+    'minha namorada', 'meu namorado', 'meu filho', 'minha filha', 'meu pai', 'minha mae',
+    'minha mãe', 'meu irmao', 'meu irmão', 'minha irma', 'minha irmã', 'meu amigo',
+    'minha amiga', 'duas pessoas', 'dois cortes', 'nós dois', 'nos dois', 'pra dois',
+    'para dois', 'pra nós', 'meu parceiro', 'minha parceira', 'meu marido', 'minha mulher'];
+  const hasGroupIntent = groupKeywords.some(k => lowerText.includes(k));
+  if (hasGroupIntent && !session.data.groupBooking?.active) {
+    const companionMap: [string, string][] = [
+      ['minha esposa', 'sua esposa'], ['meu esposo', 'seu esposo'],
+      ['minha namorada', 'sua namorada'], ['meu namorado', 'seu namorado'],
+      ['meu filho', 'seu filho'], ['minha filha', 'sua filha'],
+      ['meu pai', 'seu pai'], ['minha mae', 'sua mãe'], ['minha mãe', 'sua mãe'],
+      ['meu irmao', 'seu irmão'], ['meu irmão', 'seu irmão'],
+      ['minha irma', 'sua irmã'], ['minha irmã', 'sua irmã'],
+      ['meu amigo', 'seu amigo'], ['minha amiga', 'sua amiga'],
+      ['meu marido', 'seu marido'], ['minha mulher', 'sua mulher'],
+    ];
+    const found = companionMap.find(([k]) => lowerText.includes(k));
+    session.data.groupBooking = {
+      active: true,
+      companionDesc: found ? found[1] : 'acompanhante',
+      sameService: undefined,
+    };
+    console.log('[Agent] Group booking detected:', session.data.groupBooking.companionDesc);
+  }
+
   // ─── Add user message to history ───────────────────────────────────
   session.history.push({ role: 'user', text });
 
@@ -499,10 +825,14 @@ export async function handleMessage(
   }
 
   // ─── First AI Brain call ────────────────────────────────────────────
+  const tenantNicho: string = (tenant.nicho as string) || 'Barbearia';
+  const groupBookingCtx = buildGroupCtx(session.data);
   let brain = await callBrain(
     apiKey, tenantName, todayISO,
     serviceOptions, profOptions,
-    session.history, session.data, prefetchedSlots, customPrompt || undefined
+    session.history, session.data, prefetchedSlots, customPrompt || undefined,
+    shouldGreet, brasiliaGreeting, groupBookingCtx || undefined,
+    tenantNicho, tenantId, phone, options?.isAudio
   );
 
   if (!brain) {
@@ -541,6 +871,31 @@ export async function handleMessage(
     if (validTime) session.data.time = validTime;
   }
 
+  // ─── Group booking extractions ────────────────────────────────────────
+  if (session.data.groupBooking?.active) {
+    const gb = session.data.groupBooking;
+    if (ext.sameService !== null && ext.sameService !== undefined && gb.sameService === undefined) {
+      gb.sameService = ext.sameService;
+      if (ext.sameService && session.data.serviceId && !gb.companionServiceId) {
+        // companion uses same service as the client
+        const svc = activeServices.find((s: any) => s.id === session.data.serviceId);
+        if (svc) {
+          gb.companionServiceId = svc.id;
+          gb.companionServiceName = svc.name;
+          gb.companionServiceDuration = svc.durationMinutes;
+        }
+      }
+    }
+    if (ext.companionServiceId && !gb.companionServiceId) {
+      const svc = activeServices.find((s: any) => s.id === ext.companionServiceId);
+      if (svc) {
+        gb.companionServiceId = svc.id;
+        gb.companionServiceName = svc.name;
+        gb.companionServiceDuration = svc.durationMinutes;
+      }
+    }
+  }
+
   // ─── If we JUST extracted professional + date, fetch slots and re-run ──
   const justGotProfAndDate = !prefetchedSlots && session.data.professionalId && session.data.date;
   if (justGotProfAndDate) {
@@ -564,11 +919,24 @@ export async function handleMessage(
       if (t) session.data.time = t;
     }
 
+    // ─── Resolve companion slot if group booking data is now complete ────
+    if (
+      session.data.groupBooking?.active &&
+      session.data.groupBooking.companionServiceId &&
+      !session.data.groupBooking.resolvedMode &&
+      session.data.professionalId && session.data.date && session.data.time
+    ) {
+      session.data.groupBooking = await resolveGroupBooking(tenantId, session.data, profOptions);
+    }
+
     // Re-run brain with real slots so it can show a natural response with slot options
+    const groupBookingCtx2 = buildGroupCtx(session.data);
     const brain2 = await callBrain(
       apiKey, tenantName, todayISO,
       serviceOptions, profOptions,
-      session.history, session.data, newSlots, customPrompt || undefined
+      session.history, session.data, newSlots, customPrompt || undefined,
+      false, brasiliaGreeting, groupBookingCtx2 || undefined,
+      tenantNicho, tenantId, phone, false
     );
     if (brain2) {
       // Apply any new extractions from second call
@@ -578,6 +946,17 @@ export async function handleMessage(
       }
       brain = brain2;
     }
+  }
+
+  // ─── Resolve companion slot (Case B: prof+date already known, time just extracted by brain1) ─
+  if (
+    session.data.groupBooking?.active &&
+    session.data.groupBooking.companionServiceId &&
+    !session.data.groupBooking.resolvedMode &&
+    !justGotProfAndDate &&
+    session.data.professionalId && session.data.date && session.data.time
+  ) {
+    session.data.groupBooking = await resolveGroupBooking(tenantId, session.data, profOptions);
   }
 
   // ─── Fallback: force confirmed if pendingConfirm + affirmative message ─
@@ -645,14 +1024,47 @@ export async function handleMessage(
       if (isPlanAppointment) await db.incrementPlanUsage(tenantId, customer.id).catch(console.error);
       if (appointment) sendProfessionalNotification(appointment).catch(console.error);
 
+      // ─── Group booking: create companion appointment ───────────────────
+      let groupMsg = '';
+      const gbConf = session.data.groupBooking;
+      if (gbConf?.active && gbConf.resolvedMode && gbConf.companionServiceId) {
+        const companionStartTime = gbConf.resolvedMode === 'consecutive'
+          ? `${session.data.date}T${gbConf.companion2Time}:00`
+          : `${session.data.date}T${session.data.time}:00`;
+        const companionProfId = gbConf.resolvedMode === 'parallel'
+          ? gbConf.companion2ProfId!
+          : session.data.professionalId!;
+        const companionProfName = gbConf.resolvedMode === 'parallel'
+          ? gbConf.companion2ProfName!
+          : session.data.professionalName!;
+        try {
+          const appt2 = await db.addAppointment({
+            tenant_id: tenantId,
+            customer_id: customer.id,
+            professional_id: companionProfId,
+            service_id: gbConf.companionServiceId,
+            startTime: companionStartTime,
+            durationMinutes: gbConf.companionServiceDuration || session.data.serviceDuration,
+            status: AppointmentStatus.CONFIRMED,
+            source: BookingSource.AI,
+            isPlan: false,
+          });
+          if (appt2) sendProfessionalNotification(appt2).catch(console.error);
+          const comp2Time = gbConf.resolvedMode === 'consecutive' ? gbConf.companion2Time! : session.data.time!;
+          groupMsg = `\n\n👥 ${gbConf.companionDesc || 'Acompanhante'}: ${gbConf.companionServiceName} com ${companionProfName} às ${comp2Time}`;
+        } catch (e: any) {
+          console.error('[Agent] Group companion booking error:', e.message);
+        }
+      }
+
       clearSession(tenantId, phone);
-      const planNote = isPlanAppointment ? '\n\n📦 _Este agendamento está coberto pelo seu plano._' : '';
+      const planNote = isPlanAppointment ? '\n📦 _Coberto pelo seu plano._' : '';
+      if (shouldGreet) _greetedToday.set(_greetKey, brasiliaDate);
       return (
-        `✅ *Agendamento confirmado!*\n\n` +
-        `📅 *Dia:* ${formatDate(session.data.date)}\n` +
-        `⏰ *Horário:* ${session.data.time}\n` +
-        `✂️ *Procedimento:* ${session.data.serviceName}\n` +
-        `💈 *Barbeiro:* ${session.data.professionalName}` +
+        `Agendado! ✅\n\n` +
+        `📅 ${formatDate(session.data.date)} às ${session.data.time}\n` +
+        `✂️ ${session.data.serviceName} com ${session.data.professionalName}` +
+        groupMsg +
         planNote +
         `\n\nTe esperamos! 😊`
       );
@@ -682,5 +1094,6 @@ export async function handleMessage(
   const finalReply = brain.reply;
   session.history.push({ role: 'bot', text: finalReply });
   saveSession(session);
+  if (shouldGreet) _greetedToday.set(_greetKey, brasiliaDate);
   return finalReply;
 }

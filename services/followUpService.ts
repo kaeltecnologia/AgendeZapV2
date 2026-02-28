@@ -17,6 +17,7 @@
 import { db } from './mockDb';
 import { evolutionService } from './evolutionService';
 import { AppointmentStatus } from '../types';
+import { registerFollowUpContext } from './agentService';
 
 // Prevent concurrent runs for the same tenant
 const runningTenants = new Set<string>();
@@ -118,6 +119,11 @@ export async function runFollowUp(tenant: any): Promise<void> {
         newSent[sentKey] = nowDate;
         anySent = true;
         console.log(`[FollowUp] Aviso enviado → ${cust.name} (${cust.phone})`);
+        registerFollowUpContext(tenantId, cust.phone, 'aviso', msg, {
+          apptTime: apptTime.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+          serviceName: svc?.name || '',
+          clientName: cust.name,
+        });
       } catch (e: any) {
         console.error(`[FollowUp] Erro ao enviar aviso para ${cust.phone}:`, e.message);
       }
@@ -167,6 +173,11 @@ export async function runFollowUp(tenant: any): Promise<void> {
         newSent[sentKey] = now.toISOString();
         anySent = true;
         console.log(`[FollowUp] Lembrete enviado → ${cust.name} (appt ${appt.id})`);
+        registerFollowUpContext(tenantId, cust.phone, 'lembrete', msg, {
+          apptTime: apptTime.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+          serviceName: svc?.name || '',
+          clientName: cust.name,
+        });
       } catch (e: any) {
         console.error(`[FollowUp] Erro ao enviar lembrete para ${cust.phone}:`, e.message);
       }
@@ -231,6 +242,10 @@ export async function runFollowUp(tenant: any): Promise<void> {
         newSent[sentKey] = nowDate;
         anySent = true;
         console.log(`[FollowUp] Recuperação enviada → ${cust.name} (${daysSince.toFixed(1)} dias)`);
+        registerFollowUpContext(tenantId, cust.phone, 'reativacao', msg, {
+          serviceName: svc?.name || '',
+          clientName: cust.name,
+        });
       } catch (e: any) {
         console.error(`[FollowUp] Erro ao enviar recuperação para ${cust.phone}:`, e.message);
       }

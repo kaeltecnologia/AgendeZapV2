@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { db } from '../services/mockDb';
-import { Customer, Plan, Service, FollowUpNamedMode } from '../types';
+import { Customer, Plan, Service, FollowUpNamedMode, Professional, RecurringSchedule } from '../types';
 
 const CustomersView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -13,27 +13,32 @@ const CustomersView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
 
   const [plans, setPlans] = useState<Plan[]>([]);
   const [services, setServices] = useState<Service[]>([]);
+  const [professionals, setProfessionals] = useState<Professional[]>([]);
   const [avisoModes, setAvisoModes] = useState<FollowUpNamedMode[]>([]);
   const [lembreteModes, setLembreteModes] = useState<FollowUpNamedMode[]>([]);
   const [reativacaoModes, setReativacaoModes] = useState<FollowUpNamedMode[]>([]);
 
   const [newName, setNewName] = useState('');
   const [newPhone, setNewPhone] = useState('');
+  const [addSlotDay, setAddSlotDay] = useState<number>(1);
+  const [addSlotTime, setAddSlotTime] = useState<string>('09:00');
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<{ ok: number; fail: number } | null>(null);
 
   const load = useCallback(async () => {
     try {
       setLoading(true);
-      const [data, plansData, svcData, settings] = await Promise.all([
+      const [data, plansData, svcData, profsData, settings] = await Promise.all([
         db.getCustomers(tenantId),
         db.getPlans(tenantId),
         db.getServices(tenantId),
+        db.getProfessionals(tenantId),
         db.getSettings(tenantId)
       ]);
       setCustomers(data);
       setPlans(plansData);
       setServices(svcData.filter(s => s.active));
+      setProfessionals(profsData.filter(p => p.active));
       setAvisoModes(settings.avisoModes || []);
       setLembreteModes(settings.lembreteModes || []);
       setReativacaoModes(settings.reativacaoModes || []);
@@ -77,7 +82,8 @@ const CustomersView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
         lembreteModeId: editingCustomer.lembreteModeId,
         reativacaoModeId: editingCustomer.reativacaoModeId,
         planId: editingCustomer.planId,
-        planServiceId: editingCustomer.planServiceId
+        planServiceId: editingCustomer.planServiceId,
+        recurringSchedule: editingCustomer.recurringSchedule
       });
       await load();
       setEditingCustomer(null);
@@ -277,6 +283,123 @@ const CustomersView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
                         <option value="">Qualquer serviço</option>
                         {services.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                       </select>
+                    </div>
+                  )}
+
+                  {/* ─── Agendamento Recorrente ─── */}
+                  {editingCustomer.planId && (
+                    <div className="border-t-2 border-blue-100 pt-4 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <p className="text-[10px] font-black text-blue-600 uppercase tracking-widest">🔄 Agendamento Recorrente</p>
+                        <button
+                          type="button"
+                          onClick={() => setEditingCustomer({
+                            ...editingCustomer,
+                            recurringSchedule: {
+                              enabled: !(editingCustomer.recurringSchedule?.enabled),
+                              professionalId: editingCustomer.recurringSchedule?.professionalId || professionals[0]?.id || '',
+                              serviceId: editingCustomer.recurringSchedule?.serviceId,
+                              slots: editingCustomer.recurringSchedule?.slots || []
+                            }
+                          })}
+                          className={`relative w-12 h-6 rounded-full transition-all ${editingCustomer.recurringSchedule?.enabled ? 'bg-blue-500' : 'bg-slate-200'}`}
+                        >
+                          <span className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-all ${editingCustomer.recurringSchedule?.enabled ? 'left-7' : 'left-1'}`} />
+                        </button>
+                      </div>
+
+                      {editingCustomer.recurringSchedule?.enabled && (
+                        <div className="space-y-3">
+                          {/* Professional */}
+                          <div className="space-y-1">
+                            <label className="text-[9px] font-black text-blue-400 uppercase tracking-widest ml-1">Profissional</label>
+                            <select
+                              value={editingCustomer.recurringSchedule.professionalId || ''}
+                              onChange={e => setEditingCustomer({
+                                ...editingCustomer,
+                                recurringSchedule: { ...editingCustomer.recurringSchedule!, professionalId: e.target.value }
+                              })}
+                              className="w-full p-3 bg-white border-2 border-blue-100 rounded-xl font-bold text-sm outline-none focus:border-blue-500"
+                            >
+                              <option value="">Selecione o profissional</option>
+                              {professionals.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                            </select>
+                          </div>
+
+                          {/* Override service (optional) */}
+                          <div className="space-y-1">
+                            <label className="text-[9px] font-black text-blue-400 uppercase tracking-widest ml-1">Serviço (opcional — usa o do plano se vazio)</label>
+                            <select
+                              value={editingCustomer.recurringSchedule.serviceId || ''}
+                              onChange={e => setEditingCustomer({
+                                ...editingCustomer,
+                                recurringSchedule: { ...editingCustomer.recurringSchedule!, serviceId: e.target.value || undefined }
+                              })}
+                              className="w-full p-3 bg-white border-2 border-blue-100 rounded-xl font-bold text-sm outline-none focus:border-blue-500"
+                            >
+                              <option value="">Usar serviço do plano</option>
+                              {services.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                            </select>
+                          </div>
+
+                          {/* Configured slots */}
+                          {(editingCustomer.recurringSchedule.slots || []).length > 0 && (
+                            <div className="space-y-2">
+                              <label className="text-[9px] font-black text-blue-400 uppercase tracking-widest ml-1">Horários Fixos</label>
+                              {editingCustomer.recurringSchedule.slots.map((slot, idx) => {
+                                const dayNames = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+                                return (
+                                  <div key={idx} className="flex items-center justify-between bg-blue-50 px-4 py-2 rounded-xl border border-blue-100">
+                                    <span className="text-xs font-black text-blue-700">{dayNames[slot.dayOfWeek]} · {slot.time}</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const newSlots = editingCustomer.recurringSchedule!.slots.filter((_, i) => i !== idx);
+                                        setEditingCustomer({ ...editingCustomer, recurringSchedule: { ...editingCustomer.recurringSchedule!, slots: newSlots } });
+                                      }}
+                                      className="text-red-400 hover:text-red-600 font-black text-xs ml-3"
+                                    >✕</button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+
+                          {/* Add slot form */}
+                          <div className="flex gap-2 items-end">
+                            <div className="flex-1 space-y-1">
+                              <label className="text-[9px] font-black text-blue-400 uppercase tracking-widest ml-1">Dia</label>
+                              <select
+                                value={addSlotDay}
+                                onChange={e => setAddSlotDay(Number(e.target.value))}
+                                className="w-full p-3 bg-white border-2 border-blue-100 rounded-xl font-bold text-sm outline-none"
+                              >
+                                {['Domingo','Segunda','Terça','Quarta','Quinta','Sexta','Sábado'].map((d, i) => (
+                                  <option key={i} value={i}>{d}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div className="space-y-1">
+                              <label className="text-[9px] font-black text-blue-400 uppercase tracking-widest ml-1">Hora</label>
+                              <input
+                                type="time"
+                                value={addSlotTime}
+                                onChange={e => setAddSlotTime(e.target.value)}
+                                className="p-3 bg-white border-2 border-blue-100 rounded-xl font-bold text-sm outline-none"
+                              />
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (!addSlotTime) return;
+                                const newSlots = [...(editingCustomer.recurringSchedule?.slots || []), { dayOfWeek: addSlotDay, time: addSlotTime }];
+                                setEditingCustomer({ ...editingCustomer, recurringSchedule: { ...editingCustomer.recurringSchedule!, slots: newSlots } });
+                              }}
+                              className="py-3 px-4 bg-blue-500 text-white rounded-xl font-black text-xs hover:bg-blue-600 transition-all whitespace-nowrap"
+                            >+ Add</button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

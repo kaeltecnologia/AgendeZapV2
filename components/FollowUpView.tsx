@@ -1,7 +1,8 @@
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { db } from '../services/mockDb';
 import { FollowUpNamedMode } from '../types';
+import PlanGate from './PlanGate';
 
 type MainTab = 'aviso' | 'lembrete' | 'reativacao';
 
@@ -17,7 +18,7 @@ const TAB_CONFIG: Record<MainTab, { label: string; icon: string; tabKey: 'avisoM
   reativacao: { label: 'Recuperação', icon: '♻️', tabKey: 'reativacaoModes', timingLabel: 'Dias de ausência', timingType: 'days' }
 };
 
-const FollowUpView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
+const FollowUpView: React.FC<{ tenantId: string; tenantPlan?: string }> = ({ tenantId, tenantPlan }) => {
   const [activeTab, setActiveTab] = useState<MainTab>('aviso');
 
   const [avisoModes, setAvisoModes] = useState<FollowUpNamedMode[]>([]);
@@ -37,6 +38,28 @@ const FollowUpView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
   // Edit state for each mode (by id)
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editFields, setEditFields] = useState<Partial<FollowUpNamedMode>>({});
+
+  // Refs for variable insertion at cursor position
+  const addMsgRef = useRef<HTMLTextAreaElement | null>(null);
+  const editMsgRef = useRef<HTMLTextAreaElement | null>(null);
+
+  function insertVar(
+    variable: string,
+    ref: React.RefObject<HTMLTextAreaElement | null>,
+    currentValue: string,
+    setter: (v: string) => void
+  ) {
+    const el = ref.current;
+    if (!el) { setter(currentValue + variable); return; }
+    const start = el.selectionStart ?? currentValue.length;
+    const end = el.selectionEnd ?? currentValue.length;
+    const newVal = currentValue.slice(0, start) + variable + currentValue.slice(end);
+    setter(newVal);
+    requestAnimationFrame(() => {
+      el.focus();
+      el.setSelectionRange(start + variable.length, start + variable.length);
+    });
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -134,6 +157,7 @@ const FollowUpView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
       </div>
 
       {/* Tab content */}
+      <PlanGate feature="reativacao" tenantPlan={activeTab === 'reativacao' ? (tenantPlan ?? null) : 'ELITE'}>
       <div className="bg-white p-12 rounded-[50px] border-2 border-slate-100 shadow-xl shadow-slate-100/50 space-y-8">
 
         {/* Header */}
@@ -168,14 +192,18 @@ const FollowUpView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
               className="w-full p-4 bg-white border-2 border-slate-100 rounded-2xl outline-none font-bold focus:border-orange-500 transition-all"
             />
             <textarea
+              ref={addMsgRef}
               rows={4}
               value={newMsg}
               onChange={e => setNewMsg(e.target.value)}
               placeholder="Mensagem que será enviada via WhatsApp... Use {nome}, {dia}, {hora}, {servico}"
               className="w-full p-4 bg-white border-2 border-slate-100 rounded-2xl outline-none font-bold resize-none focus:border-orange-500 transition-all text-sm leading-relaxed"
             />
-            <div className="flex flex-wrap gap-3">
-              <Tag label="{nome}" /> <Tag label="{dia}" /> <Tag label="{hora}" /> <Tag label="{servico}" />
+            <div className="flex flex-wrap gap-2 items-center">
+              <span className="text-[9px] font-black text-slate-300 uppercase tracking-widest">inserir:</span>
+              {['{nome}', '{dia}', '{hora}', '{servico}'].map(v => (
+                <Tag key={v} label={v} onClick={() => insertVar(v, addMsgRef, newMsg, setNewMsg)} />
+              ))}
             </div>
             <div>
               <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2 ml-1">{cfg.timingLabel}</label>
@@ -235,11 +263,18 @@ const FollowUpView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
                     className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none font-bold focus:border-orange-500"
                   />
                   <textarea
+                    ref={editMsgRef}
                     rows={4}
                     value={editFields.message || ''}
                     onChange={e => setEditFields(f => ({ ...f, message: e.target.value }))}
                     className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none font-bold resize-none focus:border-orange-500 text-sm leading-relaxed"
                   />
+                  <div className="flex flex-wrap gap-2 items-center">
+                    <span className="text-[9px] font-black text-slate-300 uppercase tracking-widest">inserir:</span>
+                    {['{nome}', '{dia}', '{hora}', '{servico}'].map(v => (
+                      <Tag key={v} label={v} onClick={() => insertVar(v, editMsgRef, editFields.message || '', (val) => setEditFields(f => ({ ...f, message: val })))} />
+                    ))}
+                  </div>
                   <div>
                     <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2 ml-1">{cfg.timingLabel}</label>
                     {cfg.timingType === 'fixed' && (
@@ -322,6 +357,7 @@ const FollowUpView: React.FC<{ tenantId: string }> = ({ tenantId }) => {
           ))}
         </div>
       </div>
+      </PlanGate>
     </div>
   );
 };
@@ -333,8 +369,14 @@ const Tab = ({ active, onClick, label, icon }: any) => (
   </button>
 );
 
-const Tag = ({ label }: any) => (
-  <span className="bg-white border-2 border-slate-100 px-4 py-2 rounded-xl text-[10px] font-black text-black tracking-widest cursor-default hover:border-orange-500 transition-all uppercase">{label}</span>
+const Tag = ({ label, onClick }: { label: string; onClick?: () => void }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    className="bg-white border-2 border-slate-100 px-3 py-1.5 rounded-xl text-[10px] font-black text-slate-600 tracking-widest hover:border-orange-400 hover:bg-orange-50 hover:text-orange-600 active:scale-95 transition-all uppercase cursor-pointer"
+  >
+    {label}
+  </button>
 );
 
 export default FollowUpView;

@@ -21,7 +21,7 @@ import {
   Tenant, Professional, Service, Appointment,
   Customer, AppointmentStatus, PaymentMethod, TenantSettings,
   TenantStatus, BookingSource, Expense, BreakPeriod, Plan,
-  FollowUpNamedMode, InventoryItem
+  FollowUpNamedMode, InventoryItem, RecurringSchedule
 } from '../types';
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -86,7 +86,8 @@ class DatabaseService {
         phone: t.phone,
         due_day: t.due_day ? Number(t.due_day) : undefined,
         evolution_instance: t.evolution_instance,
-        plan: t.plan || 'BASIC',
+        nicho: t.nicho || 'Barbearia',
+        plan: t.plan || 'START',
         status: t.status as TenantStatus,
         monthlyFee: Number(t.mensalidade || 0),
         createdAt: t.created_at
@@ -110,7 +111,7 @@ class DatabaseService {
         phone: data.phone,
         due_day: data.due_day ? Number(data.due_day) : undefined,
         evolution_instance: data.evolution_instance,
-        plan: data.plan || 'BASIC',
+        plan: data.plan || 'START',
         status: data.status as TenantStatus,
         monthlyFee: Number(data.mensalidade || 0),
         createdAt: data.created_at
@@ -121,16 +122,17 @@ class DatabaseService {
     }
   }
 
-  async addTenant(tenant: { name: string; slug: string; email?: string; password?: string; plan?: string; status?: TenantStatus; monthlyFee?: number }) {
+  async addTenant(tenant: { name: string; slug: string; email?: string; password?: string; plan?: string; status?: TenantStatus; monthlyFee?: number; nicho?: string; subscriptionPlan?: string }) {
     try {
       const payload = {
         nome: tenant.name,
         slug: tenant.slug,
         email: tenant.email,
         password: tenant.password,
-        plan: tenant.plan || 'BASIC',
+        plan: tenant.subscriptionPlan || tenant.plan || 'START',
         status: tenant.status || TenantStatus.ACTIVE,
         mensalidade: tenant.monthlyFee || 0,
+        nicho: tenant.nicho || 'Barbearia',
         evolution_instance: `agz_${tenant.slug.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, '').trim()}`
       };
       const { data, error } = await supabase.from('tenants').insert(payload).select().single();
@@ -144,6 +146,7 @@ class DatabaseService {
         plan: data.plan,
         status: data.status,
         monthlyFee: data.mensalidade,
+        nicho: data.nicho || 'Barbearia',
         createdAt: data.created_at
       } as Tenant;
     } catch (e) {
@@ -163,6 +166,7 @@ class DatabaseService {
       if (updates.password !== undefined) payload.password = updates.password;
       if (updates.phone !== undefined) payload.phone = updates.phone;
       if (updates.due_day !== undefined) payload.due_day = updates.due_day;
+      if (updates.nicho !== undefined) payload.nicho = updates.nicho;
       const { error } = await supabase.from('tenants').update(payload).eq('id', id);
       if (error) throw error;
     } catch (e) {
@@ -411,7 +415,8 @@ class DatabaseService {
       lembreteModeId: cData.lembreteModeId || 'standard',
       reativacaoModeId: cData.reativacaoModeId || 'standard',
       planId: cData.planId || null,
-      planServiceId: cData.planServiceId || null
+      planServiceId: cData.planServiceId || null,
+      recurringSchedule: cData.recurringSchedule
     };
   }
 
@@ -462,6 +467,7 @@ class DatabaseService {
       const hasCData =
         'planId' in updates ||
         'planServiceId' in updates ||
+        'recurringSchedule' in updates ||
         updates.avisoModeId !== undefined ||
         updates.lembreteModeId !== undefined ||
         updates.reativacaoModeId !== undefined;
@@ -476,7 +482,8 @@ class DatabaseService {
           planServiceId: 'planServiceId' in updates ? (updates.planServiceId ?? null) : prev.planServiceId,
           avisoModeId: updates.avisoModeId !== undefined ? updates.avisoModeId : prev.avisoModeId,
           lembreteModeId: updates.lembreteModeId !== undefined ? updates.lembreteModeId : prev.lembreteModeId,
-          reativacaoModeId: updates.reativacaoModeId !== undefined ? updates.reativacaoModeId : prev.reativacaoModeId
+          reativacaoModeId: updates.reativacaoModeId !== undefined ? updates.reativacaoModeId : prev.reativacaoModeId,
+          recurringSchedule: 'recurringSchedule' in updates ? (updates.recurringSchedule as RecurringSchedule | undefined) : prev.recurringSchedule
         };
         await this.updateSettings(tenantId, { customerData: allCData });
       }
@@ -703,6 +710,54 @@ class DatabaseService {
     }
   }
 
+  // ─── SUPPORT REQUESTS ───────────────────────────────────────────────
+
+  async sendSupportRequest(tenantId: string, message: string, currentPlan: string, feature: string): Promise<void> {
+    try {
+      const { data } = await supabase.from('tenant_settings').select('follow_up').eq('tenant_id', tenantId).maybeSingle();
+      const follow_up = {
+        ...(data?.follow_up || {}),
+        _supportRequest: {
+          message: message.trim() || 'Solicitar upgrade de plano',
+          currentPlan,
+          feature,
+          ts: new Date().toISOString(),
+          status: 'pending'
+        }
+      };
+      await supabase.from('tenant_settings').upsert({ tenant_id: tenantId, follow_up }, { onConflict: 'tenant_id' });
+    } catch (e) { console.error('Error sending support request:', e); throw e; }
+  }
+
+  async getAllSupportRequests(): Promise<Array<{ tenantId: string; tenantName: string; plan: string; request: { message: string; currentPlan: string; feature: string; ts: string; status: string } }>> {
+    try {
+      const [{ data: settings }, { data: tenants }] = await Promise.all([
+        supabase.from('tenant_settings').select('tenant_id, follow_up'),
+        supabase.from('tenants').select('id, nome, plan')
+      ]);
+      const tenantMap = Object.fromEntries((tenants || []).map(t => [t.id, { name: t.nome || 'Sem Nome', plan: t.plan || 'START' }]));
+      return (settings || [])
+        .filter(s => s.follow_up?._supportRequest?.status === 'pending')
+        .map(s => ({
+          tenantId: s.tenant_id,
+          tenantName: tenantMap[s.tenant_id]?.name || 'Desconhecido',
+          plan: tenantMap[s.tenant_id]?.plan || 'START',
+          request: s.follow_up._supportRequest
+        }));
+    } catch (e) { console.error('Error getting support requests:', e); return []; }
+  }
+
+  async dismissSupportRequest(tenantId: string): Promise<void> {
+    try {
+      const { data } = await supabase.from('tenant_settings').select('follow_up').eq('tenant_id', tenantId).maybeSingle();
+      const follow_up = {
+        ...(data?.follow_up || {}),
+        _supportRequest: { ...(data?.follow_up?._supportRequest || {}), status: 'resolved' }
+      };
+      await supabase.from('tenant_settings').upsert({ tenant_id: tenantId, follow_up }, { onConflict: 'tenant_id' });
+    } catch (e) { console.error('Error dismissing support request:', e); throw e; }
+  }
+
   // ─── BREAK PERIODS (convenience wrappers over settings) ─────────────
 
   async getBreaks(tenantId: string): Promise<BreakPeriod[]> {
@@ -771,6 +826,84 @@ class DatabaseService {
       lembrete: s.lembreteModes || [],
       reativacao: s.reativacaoModes || []
     };
+  }
+
+  // ─── RECURRING APPOINTMENT GENERATOR ────────────────────────────────
+  // Called periodically (every 60 s) to pre-create plan appointments
+  // for customers who have a recurringSchedule configured.
+
+  async generateRecurringAppointments(tenantId: string): Promise<number> {
+    try {
+      const [customers, appointments, services] = await Promise.all([
+        this.getCustomers(tenantId),
+        this.getAppointments(tenantId),
+        this.getServices(tenantId),
+      ]);
+
+      const now = new Date();
+      const weeksAhead = 4;
+      let created = 0;
+
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const toDateStr = (d: Date) =>
+        `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+      for (const customer of customers) {
+        const sched = customer.recurringSchedule;
+        if (!sched?.enabled || !sched.professionalId || !sched.slots?.length) continue;
+
+        const serviceId = sched.serviceId || customer.planServiceId || '';
+        if (!serviceId) continue;
+
+        const service = services.find(s => s.id === serviceId && s.active);
+        if (!service) continue;
+
+        for (const slot of sched.slots) {
+          for (let week = 0; week < weeksAhead; week++) {
+            // Find next occurrence of slot.dayOfWeek from today
+            const target = new Date(now);
+            const daysUntil = ((slot.dayOfWeek - target.getDay()) + 7) % 7;
+            target.setDate(target.getDate() + daysUntil + week * 7);
+
+            const [h, m] = slot.time.split(':').map(Number);
+            target.setHours(h, m, 0, 0);
+
+            // Skip past moments
+            if (target <= now) continue;
+
+            const dateStr = toDateStr(target);
+
+            // Skip if appointment already exists for this customer at this date/time
+            const exists = appointments.some(a =>
+              a.customer_id === customer.id &&
+              a.startTime.slice(0, 10) === dateStr &&
+              a.startTime.slice(11, 16) === slot.time &&
+              a.status !== AppointmentStatus.CANCELLED
+            );
+            if (exists) continue;
+
+            await this.addAppointment({
+              tenant_id: tenantId,
+              customer_id: customer.id,
+              professional_id: sched.professionalId,
+              service_id: serviceId,
+              startTime: `${dateStr}T${slot.time}:00`,
+              durationMinutes: service.durationMinutes,
+              status: AppointmentStatus.CONFIRMED,
+              source: BookingSource.PLAN,
+              isPlan: true,
+            });
+            created++;
+            console.log(`[RecurSched] Criado: ${customer.name} → ${dateStr} ${slot.time}`);
+          }
+        }
+      }
+
+      return created;
+    } catch (e) {
+      console.error('[RecurSched] Erro ao gerar agendamentos recorrentes:', e);
+      return 0;
+    }
   }
 
   // ─── FINANCIAL ──────────────────────────────────────────────────────

@@ -120,6 +120,7 @@ async function processarMensagem(tenant: any, msg: any, settings?: any) {
 
   // ── Audio transcription ──────────────────────────────────────────────
   let audioReceived = false;
+  let wasTranscribed = false;
   if (!text) {
     const msgType = msg.messageType || msg.type || '';
     const isAudio =
@@ -128,7 +129,6 @@ async function processarMensagem(tenant: any, msg: any, settings?: any) {
       !!msg.message?.pttMessage;
     if (isAudio) {
       audioReceived = true;
-      // Use the same key resolution as agentService: settings.openaiApiKey first, then tenant column
       const geminiKey: string = (settings?.openaiApiKey || '').trim() || tenant.gemini_api_key || '';
       console.log('[AiPolling] Áudio detectado. geminiKey presente:', !!geminiKey, '| msgType:', msgType);
       if (geminiKey) {
@@ -139,7 +139,10 @@ async function processarMensagem(tenant: any, msg: any, settings?: any) {
         if (audio) {
           const transcribed = await transcribeAudio(geminiKey, audio.base64, audio.mimeType);
           console.log('[AiPolling] Transcrição:', transcribed ?? 'null');
-          if (transcribed) text = transcribed;
+          if (transcribed) {
+            text = transcribed;
+            wasTranscribed = true;
+          }
         }
       } else {
         console.warn('[AiPolling] Chave Gemini não configurada — áudio ignorado');
@@ -152,7 +155,10 @@ async function processarMensagem(tenant: any, msg: any, settings?: any) {
     const cleanPhone = extrairNumero(msg);
     if (cleanPhone) {
       const instanceName = tenant.evolution_instance || evolutionService.getInstanceName(tenant.slug);
-      await evolutionService.sendMessage(instanceName, cleanPhone, 'Recebi seu áudio! 🎵 Poderia digitar sua mensagem para eu entender melhor? 😊');
+      await evolutionService.sendMessage(
+        instanceName, cleanPhone,
+        'Recebi seu áudio! 🎵\n\nPoderia escrever sua mensagem? Assim consigo te atender melhor. 😊'
+      );
     }
     return;
   }
@@ -166,7 +172,7 @@ async function processarMensagem(tenant: any, msg: any, settings?: any) {
     const profReply = await handleProfessionalMessage(tenant, cleanPhone, text);
     const reply = profReply !== null
       ? profReply
-      : await handleMessage(tenant, cleanPhone, text, msg.pushName || 'Cliente');
+      : await handleMessage(tenant, cleanPhone, text, msg.pushName || 'Cliente', { isAudio: wasTranscribed });
     if (reply) {
       const instanceName = tenant.evolution_instance || evolutionService.getInstanceName(tenant.slug);
       await evolutionService.sendMessage(instanceName, cleanPhone, reply);
@@ -320,6 +326,9 @@ const AiPollingManager: React.FC<{ tenantId: string }> = ({ tenantId }) => {
 
     const tick = async () => {
       try {
+        // Generate missing recurring plan appointments (next 4 weeks)
+        await db.generateRecurringAppointments(tenantId);
+
         const { data: tenants } = await supabase.from('tenants').select('*');
         const tenant = (tenants || []).find((t: any) => t.id === tenantId);
         if (tenant) await runFollowUp(tenant);
